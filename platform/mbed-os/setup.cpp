@@ -17,6 +17,7 @@
 #include "memory_tests.h"
 #include "simplem2mclient.h"
 #include "SDBlockDevice.h"
+#include "UbloxATCellularInterface.h"
 
 #define MBED_CONF_APP_ESP8266_TX MBED_CONF_APP_WIFI_TX
 #define MBED_CONF_APP_ESP8266_RX MBED_CONF_APP_WIFI_RX
