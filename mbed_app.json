@@ -3,8 +3,7 @@
         "*": {
             "lwip.ppp-enabled": true,
             "platform.stdio-baud-rate": 115200,
-            "platform.stdio-convert-newlines": true,
-            "ublox-cell.baud-rate": 230400
+            "platform.stdio-convert-newlines": true
         }
     }
 }
