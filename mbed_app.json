@@ -2,7 +2,6 @@
     "target_overrides": {
         "*": {
             "lwip.ppp-enabled": true,
-            "platform.stdio-baud-rate": 115200,
             "platform.stdio-convert-newlines": true
         }
     }
