@@ -25,7 +25,8 @@
             "mbed-client-pal.update-active-metadata-header-offset": "0x08020000"
         },
         "UBLOX_C030": {
-            "lwip.ppp-enabled": true
+            "lwip.ppp-enabled": true,
+            "mbed-client-pal.update-active-metadata-header-offset": "0x08020000"
         }
     },
     "config": {
