@@ -6,11 +6,10 @@ Basic Instructions For This C030 Hack
 2.  Run `git checkout ublox_c030_support`.
 3.  Run `mbed deploy`.
 4.  Replace the file `easy-connect.h` in the `easy-connect` directory with the file `easy-connect.h - REPLACE THE ONE IN easy-connect WITH THIS ONE`.
-5. Navigate to the `mbed-os\targets\TARGET_STM\TARGET_STM32F4\TARGET_STM32F437xG\device` directory and edit the linker files in the relevant toolchain sub-directory such that `MBED_APP_START 0x08000000` becomes `MBED_APP_START 0x08020400`.
-6.  Run `mbed target UBLOX_C030_U201` and `mbed toolchain GCC_ARM` (or whatever toolset you use).
-7.  Navigate to https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html and work out how to download your specific developer credentials file, `mbed_cloud_dev_credentials.c`, replacing the empty one in the root of this build with it.
-8.  Run `mbed compile`.
-9.  Download the resulting build to your C030 board and it should register with the network and begin doing stuff.  If you attach a serial terminal running at 115200 you should see something like:
+5.  Run `mbed target UBLOX_C030_U201` and `mbed toolchain GCC_ARM` (or whatever toolset you use).
+6.  Navigate to https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html and work out how to download your specific developer credentials file, `mbed_cloud_dev_credentials.c`, replacing the empty one in the root of this build with it.
+7.  Run `mbed compile`.
+8.  Download the resulting build to your C030 board and it should register with the network and begin doing stuff.  If you attach a serial terminal running at 115200 you should see something like:
 
 ```
 Starting example client
@@ -36,7 +35,9 @@ increment resource value, new value of resource is 4
 
 Adding Firmware Update Over The Air To This C030 Hack
 =====================================================
-Follow the instructions at https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html#remotely-update-your-mbed-os-device-firmware but using `mbed-bootloader-ublox-c030.bin` as your bootloader binary.  When you download the initial combined OTA-updateable image, you should see something like the following on your serial terminal:
+First, navigate to the `mbed-os\targets\TARGET_STM\TARGET_STM32F4\TARGET_STM32F437xG\device` directory and edit the linker files in the relevant toolchain sub-directory such that `MBED_APP_START 0x08000000` becomes `MBED_APP_START 0x08020400`.
+
+Then follow the instructions at https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html#remotely-update-your-mbed-os-device-firmware but using `mbed-bootloader-ublox-c030.bin` as your bootloader binary.  When you download the initial combined OTA-updateable image, you should see something like the following on your serial terminal:
 
 ```
 [BOOT] Active firmware integrity check:
