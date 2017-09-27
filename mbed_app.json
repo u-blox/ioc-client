@@ -1,5 +1,13 @@
 {
-    "macros": ["MBEDTLS_USER_CONFIG_FILE=\"mbedtls_mbed_client_config.h\"",
+    "macros": ["ENABLE_RAMLOG",
+               "ENABLE_LOG_AS_FUNCTION",
+               "MAX_NUM_DATAGRAMS=200",
+               "TCP_MSS=1376",
+               "TCP_WND=27520",
+               "PBUF_POOL_SIZE=20",
+               "TCP_SND_BUF=16512",
+               "MEMP_NUM_TCP_SEG=96",
+               "MBEDTLS_USER_CONFIG_FILE=\"mbedtls_mbed_client_config.h\"",
                "MBED_CLIENT_USER_CONFIG_FILE=\"mbed_cloud_client_user_config.h\"",
                "MBED_CLOUD_CLIENT_USER_CONFIG_FILE=\"mbed_cloud_client_user_config.h\"",
                "PAL_USE_FATFS_SD=1",
@@ -7,32 +15,41 @@
     "target_overrides": {
         "*": {
             "target.features_add": ["COMMON_PAL"],
-            "platform.stdio-baud-rate": 115200,
-            "platform.stdio-convert-newlines": true,
-            "lwip.ipv4-enabled": true,
-            "lwip.ipv6-enabled": false,
+            "drivers.uart-serial-rxbuf-size": 256,
+            "drivers.uart-serial-txbuf-size": 256,
+            "lwip.ppp-thread-stacksize": 768,
+            "lwip.ppp-enabled": true,
+            "lwip.debug-enabled": true,
+            "ppp-cell-iface.apn-lookup": true,
             "mbed-client.sn-coap-max-blockwise-payload-size": 1024,
-            "mbed-trace.enable": null
-        },
-        "K64F": {
-            "mbed-client-pal.update-active-metadata-header-offset": "0x00020000"
-        },
-        "NUCLEO_F429ZI": {
-            "mbed-client-pal.update-active-metadata-header-offset": "0x08020000"
-        },
-        "UBLOX_EVK_ODIN_W2": {
-            "target.device_has_remove": ["EMAC"],
-            "mbed-client-pal.update-active-metadata-header-offset": "0x08020000"
+            "platform.stdio-convert-newlines": true,
+            "platform.stdio-baud-rate": 115200,
+            "mbed-trace.enable": false
         },
         "UBLOX_C030": {
-            "lwip.ppp-enabled": true,
             "mbed-client-pal.update-active-metadata-header-offset": "0x08020000"
         }
     },
     "config": {
-        "network-interface":{
-            "help": "Options are ETHERNET, WIFI_ESP8266, WIFI_ODIN, CELLULAR",
-            "value": "CELLULAR"
+        "network-interface": {
+            "help": "Options are ETHERNET, WIFI_ESP8266, WIFI_ODIN, CELLULAR_ONBOARD",
+            "value": "CELLULAR_ONBOARD"
+        },
+        "cellular-apn": {
+            "help": "Required if using the mbed-os generic cellular driver.  Please provide the APN for your SIM card; the one below is correct for a UBLOX_C030_U201 board which uses a chip SIM.",
+            "value": "\"jtm2m\""
+        },
+        "cellular-username": {
+            "help": "May or may not be required for your APN, please consult your SIM provider.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
+            "value": null
+        },
+        "cellular-password": {
+            "help": "May or may not be required for your APN, please consult your SIM provider.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
+            "value": null
+        },
+        "cellular-sim-pin": {
+            "help": "Please provide the PIN for your SIM if your SIM is locked.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
+            "value": null
         },
         "developer-mode": {
             "help": "Enable Developer mode to skip Factory enrollment",

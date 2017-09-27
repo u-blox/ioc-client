@@ -12,10 +12,16 @@
 // from ARM Limited or its affiliates.
 //----------------------------------------------------------------------------
 
+#include "mbed.h"
 #include "mbed-trace/mbed_trace.h"
 #include "mbed-trace-helper.h"
 #include "simplem2mclient.h"
 #include "factory_configurator_client.h"
+
+// LEDs
+static DigitalOut ledRed(LED1, 1);
+static DigitalOut ledGreen(LED2, 1);
+static DigitalOut ledBlue(LED3, 1);
 
 static bool init_mbed_trace()
 {
@@ -34,6 +40,7 @@ static bool init_mbed_trace()
 }
 
 int main() {
+    ledGreen = 0;
     if (!init_mbed_trace()) {
         printf("Failed initializing mbed trace\n - exit" );
         mbed_trace_free();
@@ -94,6 +101,8 @@ int main() {
     increment_resource_thread(&mbedClient);
     mbedClient.call_register();
     print_heap_stats();
+    ledGreen = 1;
+    ledBlue = 0;
     while (mbedClient.is_register_called()) {
         do_wait(1);
     }
