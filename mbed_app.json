@@ -32,26 +32,6 @@
         }
     },
     "config": {
-        "network-interface": {
-            "help": "Options are ETHERNET, WIFI_ESP8266, WIFI_ODIN, CELLULAR_ONBOARD",
-            "value": "CELLULAR_ONBOARD"
-        },
-        "cellular-apn": {
-            "help": "Required if using the mbed-os generic cellular driver.  Please provide the APN for your SIM card; the one below is correct for a UBLOX_C030_U201 board which uses a chip SIM.",
-            "value": "\"jtm2m\""
-        },
-        "cellular-username": {
-            "help": "May or may not be required for your APN, please consult your SIM provider.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
-            "value": null
-        },
-        "cellular-password": {
-            "help": "May or may not be required for your APN, please consult your SIM provider.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
-            "value": null
-        },
-        "cellular-sim-pin": {
-            "help": "Please provide the PIN for your SIM if your SIM is locked.  The value is a string and so it must be double-escaped like the cellular-apn value above.",
-            "value": null
-        },
         "developer-mode": {
             "help": "Enable Developer mode to skip Factory enrollment",
             "value": 1

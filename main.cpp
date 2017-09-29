@@ -15,19 +15,75 @@
 #include "mbed.h"
 #include "mbed-trace/mbed_trace.h"
 #include "mbed-trace-helper.h"
+#include "SDBlockDevice.h"
+#include "UbloxPPPCellularInterface.h"
 #include "simplem2mclient.h"
 #include "factory_configurator_client.h"
 #include "urtp.h"
 #include "log.h"
 
+#ifdef MBED_HEAP_STATS_ENABLED
+#include "memory_tests.h"
+#endif
+
+// Interval to update resource value in ms
+#define INCREMENT_INTERVAL 25000
+
 // Datagram storage for URTP
 __attribute__ ((section ("CCMRAM")))
 static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
+
+UbloxPPPCellularInterface *cellular = NULL;
+
+extern SDBlockDevice sd;     // in pal_plat_fileSystem.cpp
+
+static Thread resource_thread;
 
 // LEDs
 static DigitalOut ledRed(LED1, 1);
 static DigitalOut ledGreen(LED2, 1);
 static DigitalOut ledBlue(LED3, 1);
+
+bool init_connection() {
+    bool success = false;
+
+    srand(time(NULL));
+
+    cellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, 230400, true);
+
+    printf ("Initialising cellular...\n");
+    if (cellular->init()) {
+        printf ("Please wait up to 180 seconds to connect to the packet network...\n");
+        if (cellular->connect() == NSAPI_ERROR_OK) {
+            success = true;
+        } else {
+            printf ("Unable to connect to the cellular packet network.\n");
+        }
+    } else {
+        printf ("Unable to initialise cellular.\n");
+    }
+
+    return success;
+}
+
+static void increment_resource(void const* arg) {
+    SimpleM2MClient *client;
+    client = (SimpleM2MClient*) arg;
+    while(true) {
+        Thread::wait(INCREMENT_INTERVAL);
+        if(client->is_client_registered()) {
+            client->increment_resource_value();
+#if defined(MBED_CLOUD_CLIENT_TRANSPORT_MODE_UDP) || \
+    defined(MBED_CLOUD_CLIENT_TRANSPORT_MODE_UDP_QUEUE)
+            client->keep_alive();
+#endif
+        }
+    }
+}
+
+static void increment_resource_thread(void* client) {
+    resource_thread.start(callback(increment_resource, (void*)client));
+}
 
 static bool init_mbed_trace()
 {
@@ -46,26 +102,31 @@ static bool init_mbed_trace()
 }
 
 int main() {
+    int x;
+
     ledGreen = 0;
     printf("Making sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
+
     if (!init_mbed_trace()) {
         printf("Failed initializing mbed trace\n - exit" );
         mbed_trace_free();
         mbed_trace_helper_delete_mutex();
         return 1;
     }
-    printf("Starting example client\n");
-    if(initPlatform()!=0) {
-       printf("ERROR - initPlatform() failed!\n");
-       return -1;
-    }
-    clear_screen();
-    print_to_screen(0, 3, "Cloud Client: Initializing");
 
+    printf("Starting SD card...\n");
+    x = sd.init();
+    if(x != 0) {
+        printf("Failed to initialise SD card with error %d.\n", x);
+        return -1;
+    }
+    printf("SD card started...\n");
+
+#ifdef MBED_HEAP_STATS_ENABLED
     // Print some statistics of the object sizes and heap memory consumption
-    // if the MBED_HEAP_STATS_ENABLED is defined.
-    print_m2mobject_stats();
-    print_heap_stats();
+    m2mobject_stats();
+    heap_stats();
+#endif
     printf("Start simple mbed Cloud Client\n");
 
     fcc_status_e status = fcc_init();
@@ -103,14 +164,14 @@ int main() {
     
     SimpleM2MClient *mbedClient = new SimpleM2MClient();
     mbedClient->create_resources();
-    clear_screen();
-    print_to_screen(0, 3, "Cloud Client: Connecting");
     increment_resource_thread(mbedClient);
     mbedClient->call_register();
-    print_heap_stats();
+#ifdef MBED_HEAP_STATS_ENABLED
+    heap_stats();
+#endif
     ledGreen = 1;
     ledBlue = 0;
     while (mbedClient->is_register_called()) {
-        do_wait(1);
+        wait_ms(1000);
     }
 }

@@ -18,7 +18,11 @@
 #include "mbed-cloud-client/MbedCloudClient.h"
 #include "m2mdevice.h"
 #include "m2mresources.h"
-#include "setup.h"
+#include "UbloxPPPCellularInterface.h"
+
+#ifdef MBED_HEAP_STATS_ENABLED
+#include "memory_tests.h"
+#endif
 
 #ifdef MBED_CLOUD_CLIENT_USER_CONFIG_FILE
 #include MBED_CLOUD_CLIENT_USER_CONFIG_FILE
@@ -29,6 +33,9 @@
 #endif
 
 #include <stdio.h>
+
+extern UbloxPPPCellularInterface* cellular;
+extern bool init_connection();
 
 class SimpleM2MClient {
 
@@ -46,8 +53,9 @@ public:
 
         // Add some test resources to measure memory consumption.
         // This code is activated only if MBED_HEAP_STATS_ENABLED is defined.
-        create_m2mobject_test_set(&_obj_list);
-
+#ifdef MBED_HEAP_STATS_ENABLED
+        m2mobject_test_set(_obj_list);
+#endif
         _cloud_client.add_objects(_obj_list);
         _cloud_client.on_registered(this, &SimpleM2MClient::client_registered);
         _cloud_client.on_unregistered(this, &SimpleM2MClient::client_unregistered);
@@ -57,7 +65,7 @@ public:
 
     bool call_register() {
         if (init_connection()) {
-            bool setup = _cloud_client.setup(get_network_interface());
+            bool setup = _cloud_client.setup(cellular);
             _register_called = true;
             if (!setup) {
                 printf("Client setup failed\n");
@@ -96,13 +104,9 @@ public:
         if (endpoint == NULL) {
             endpoint = _cloud_client.endpoint_info();
             if (endpoint) {
-                clear_screen();
-                print_to_screen(0, 3, "Cloud Client: Ready");
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-                print_to_screen(0, 15, endpoint->internal_endpoint_name.c_str());
                 printf("Endpoint Name: %s\r\n", endpoint->internal_endpoint_name.c_str());
 #else
-                print_to_screen(0, 15, endpoint->endpoint_name.c_str());
                 printf("Endpoint Name: %s\r\n", endpoint->endpoint_name.c_str());
 #endif
                 printf("Device Id: %s\r\n", endpoint->internal_endpoint_name.c_str());
