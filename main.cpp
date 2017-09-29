@@ -17,6 +17,12 @@
 #include "mbed-trace-helper.h"
 #include "simplem2mclient.h"
 #include "factory_configurator_client.h"
+#include "urtp.h"
+#include "log.h"
+
+// Datagram storage for URTP
+__attribute__ ((section ("CCMRAM")))
+static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
 // LEDs
 static DigitalOut ledRed(LED1, 1);
@@ -41,6 +47,7 @@ static bool init_mbed_trace()
 
 int main() {
     ledGreen = 0;
+    printf("Making sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
     if (!init_mbed_trace()) {
         printf("Failed initializing mbed trace\n - exit" );
         mbed_trace_free();
@@ -94,16 +101,16 @@ int main() {
         return 1;
     }
     
-    SimpleM2MClient mbedClient;
-    mbedClient.create_resources();
+    SimpleM2MClient *mbedClient = new SimpleM2MClient();
+    mbedClient->create_resources();
     clear_screen();
     print_to_screen(0, 3, "Cloud Client: Connecting");
-    increment_resource_thread(&mbedClient);
-    mbedClient.call_register();
+    increment_resource_thread(mbedClient);
+    mbedClient->call_register();
     print_heap_stats();
     ledGreen = 1;
     ledBlue = 0;
-    while (mbedClient.is_register_called()) {
+    while (mbedClient->is_register_called()) {
         do_wait(1);
     }
 }
