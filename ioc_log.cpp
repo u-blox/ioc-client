@@ -15,7 +15,7 @@
  */
 
 #include "mbed.h"
-#include "log.h"
+#include "ioc_log.h"
 
 /* ----------------------------------------------------------------
  * VARIABLES
