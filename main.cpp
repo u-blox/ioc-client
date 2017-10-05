@@ -113,6 +113,20 @@ static bool getLocation(IocCtrlLocation::Location *data)
     return true;
 }
 
+static bool getTemperature(IocCtrlTemperature::Temperature *data)
+{
+    data->temperature = 32;
+    data->minTemperature = 5;
+    data->maxTemperature = 40;
+
+    return true;
+}
+
+static void resetMinMax()
+{
+    printf("Received min/max temperature reset.\n");
+}
+
 /* ----------------------------------------------------------------
  * FUNCTIONS
  * -------------------------------------------------------------- */
@@ -204,6 +218,8 @@ int main() {
     cloudClientDm->addObject(powerControl->getObject());
     IocCtrlLocation *location = new IocCtrlLocation(true, getLocation);
     cloudClientDm->addObject(location->getObject());
+    IocCtrlTemperature *temperature = new IocCtrlTemperature(true, getTemperature, resetMinMax, -10, +120, "cel");
+    cloudClientDm->addObject(temperature->getObject());
 
     printf("Starting Device object...\n");
     if (cloudClientDm->start(powerControl)) {
@@ -231,6 +247,7 @@ int main() {
     delete cloudClientDm;
     delete powerControl;
     delete location;
+    delete temperature;
     heapStats();
 
     printf("Disconnecting network...\n");

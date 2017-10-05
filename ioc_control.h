@@ -24,10 +24,7 @@
  *
  *   - Power Control (urn:oma:lwm2m:ext:3312), to turn the device on or off
  *   - Location Object (urn:oma:lwm2m:oma:6),
- *   - Connectivity Monitoring (urn:oma:lwm2m:oma:4),
  *   - Temperature Sensor (urn:oma:lwm2m:ext:3303),
- *   - Humidity (urn:oma:lwm2m:ext:3304),
- *   - System Log (urn:oma:lwm2m:x:10259),
  *   - Config as Private Object (urn:oma:lwm2m:x:32769) containing the following reusable resources:
  *       - InitWakeUpTick as Duration (urn:oma:lwm2m:ext:5524),
  *       - InitWakeUpCount as Counter (urn:oma:lwm2m:ext:5534),
@@ -91,6 +88,10 @@ protected:
     /** Format for a UNIX timestamp.
      */
 #   define FORMAT_TIMESTAMP "%dl"
+
+    /** Format for temperature.
+     */
+#   define FORMAT_TEMPERATURE "%3.1f"
 
     /** Structure to represent a resource.
      */
@@ -276,6 +277,113 @@ protected:
     /** Callback to obtain location information.
      */
     Callback<bool(Location*)> _getCallback;
+
+    /** The LWM2M object.
+     */
+    M2MObject *_object;
+};
+
+/**********************************************************************
+ * TEMPERATURE OBJECT
+ **********************************************************************/
+
+/** Report temperature.
+ * Implementation is according to urn:oma:lwm2m:ext:3303
+ * with all optional resources included.
+ */
+class IocCtrlTemperature : private IocCtrlHelper  {
+public:
+
+    /** Temperature structure.
+     */
+    typedef struct {
+        float temperature;
+        float minTemperature;
+        float maxTemperature;
+        float resetMinMax;
+    } Temperature;
+
+    /** Constructor.
+     *
+     * @param debugOn              true if you want debug prints, otherwise false.
+     * @param getCallback          callback to get location information.
+     * @param resetMinMaxCallback  callback to reset the min/max readings.
+     * @param minRange             the minimum temperature the sensor can measure.
+     * @param units                a string representing the units of temperature used.
+     */
+    IocCtrlTemperature(bool debugOn,
+                       Callback<bool(Temperature*)> getCallback,
+                       Callback<void(void)> resetMinMaxCallback,
+                       int minRange,
+                       int maxRange,
+                       const char *units);
+
+    /** Destructor.
+     */
+    virtual ~IocCtrlTemperature();
+
+    /** Executable function.
+     */
+    void executeFunction(void * parameter);
+
+    /** Return this object.
+     *
+     * @return pointer to this object.
+     */
+    M2MObject * getObject();
+
+protected:
+
+    /** Update the reportable data.
+     */
+    void updateData();
+
+    /** The resource number for temperature.
+     */
+#   define RESOURCE_NUMBER_TEMPERATURE "5700"
+
+    /** The resource number for minimum temperature.
+     */
+#   define RESOURCE_NUMBER_MIN_TEMPERATURE "5601"
+
+    /** The resource number for maximum temperature.
+     */
+#   define RESOURCE_NUMBER_MAX_TEMPERATURE "5602"
+
+    /** The resource number for the executable
+     * resource that resets the min/max.
+     */
+#   define RESOURCE_NUMBER_RESET_MIN_MAX "5605"
+
+    /** The resource number for the minimum measurable
+     * temperature value.
+     */
+#   define RESOURCE_NUMBER_MIN_RANGE "5603"
+
+    /** The resource number for the maximum measurable
+     * temperature value.
+     */
+#   define RESOURCE_NUMBER_MAX_RANGE "5604"
+
+    /** The resource number for theh units of temperature.
+     */
+#   define RESOURCE_NUMBER_UNITS "5701"
+
+    /** Definition of this object.
+     */
+    static const DefObject _defObject;
+
+    /** Set to true to have debug prints.
+     */
+    bool _debugOn;
+
+    /** Callback to obtain temperature information.
+     */
+    Callback<bool(Temperature*)> _getCallback;
+
+    /** Callback to reset the min/max readings.
+     */
+    Callback<void(void)> _resetMinMaxCallback;
 
     /** The LWM2M object.
      */
