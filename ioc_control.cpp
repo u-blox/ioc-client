@@ -37,9 +37,9 @@ IocCtrlPowerControl::IocCtrlPowerControl(bool debugOn,
     _debugOn = debugOn;
     _setCallback = setCallback;
 
-    _object = M2MInterfaceFactory::create_object("3312");
+    _object = M2MInterfaceFactory::create_object(OBJECT_NUMBER);
     objectInstance = _object->create_object_instance();
-    resource = objectInstance->create_dynamic_resource("5850",
+    resource = objectInstance->create_dynamic_resource(RESOURCE_NUMBER_POWER_SWITCH,
                                                        "on/off",
                                                         M2MResourceInstance::BOOLEAN,
                                                         false /* observable */);
@@ -52,22 +52,19 @@ IocCtrlPowerControl::IocCtrlPowerControl(bool debugOn,
 // Destructor.
 IocCtrlPowerControl::~IocCtrlPowerControl()
 {
+    delete _object;
 }
 
 // MbedCloudClientCallback.
 void IocCtrlPowerControl::value_updated(M2MBase *base, M2MBase::BaseType type)
 {
-    M2MObjectInstance *objectInstance;
-    M2MResource *resource;
-    bool value;
+    M2MObjectInstance *objectInstance = _object->object_instance();;
+    M2MResource *resource = objectInstance->resource(RESOURCE_NUMBER_POWER_SWITCH);
+    bool value = (bool) resource->get_value_int();
 
     printfLog("IocCtrlPowerControl: PUT request received.\n");
     printfLog("IocCtrlPowerControl: name: \"%s\", path: \"%s\", type: %d (0 for object, 1 for resource), type: \"%s\".\n",
               base->name(), base->uri_path(), type, base->resource_type());
-
-    objectInstance = _object->object_instance();
-    resource = objectInstance->resource("5850");
-    value = (bool) resource->get_value_int();
 
     printfLog("IocCtrlPowerControl: new value is %d.\n", value);
 

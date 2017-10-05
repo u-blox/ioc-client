@@ -69,7 +69,7 @@ public:
 
     /** Destructor.
      */
-    ~IocCtrlPowerControl();
+    virtual ~IocCtrlPowerControl();
 
     /** Return this object.
      *
@@ -79,16 +79,25 @@ public:
 
     /** MbedCloudClientCallback.
      *
-     * @return base information about the thing.
-     * @return type the type of the thing (object or resource).
+     * @param base  information about the thing.
+     * @param type  the type of the thing (object or resource).
      */
     virtual void value_updated(M2MBase *base, M2MBase::BaseType type);
 
 protected:
 
+    /** The object number for this object.
+     */
+#   define OBJECT_NUMBER "3312"
+
+    /** The resource number for the only resource
+     * in this object: the on/off switch.
+     */
+#   define RESOURCE_NUMBER_POWER_SWITCH "5850"
+
     /** Set to true to have debug prints.
      */
-    bool                 _debugOn;
+    bool _debugOn;
 
     /** Callback to set device on (true) or off (false).
      */
@@ -96,7 +105,7 @@ protected:
 
     /** The power control object.
      */
-    M2MObject           *_object;
+    M2MObject *_object;
 };
 
 #endif // _IOC_CONTROL_

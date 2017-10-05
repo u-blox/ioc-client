@@ -40,8 +40,6 @@
 __attribute__ ((section ("CCMRAM")))
 static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
-UbloxPPPCellularInterface *cellular = NULL;
-
 extern SDBlockDevice sd;     // in pal_plat_fileSystem.cpp
 
 // LEDs
@@ -53,26 +51,38 @@ static DigitalOut ledBlue(LED3, 1);
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
 
-bool init_connection() {
-    bool success = false;
+// Indicate good (green)
+static void good() {
+    ledGreen = 0;
+    ledBlue = 1;
+    ledRed = 1;
+}
 
-    srand(time(NULL));
+// Indicate bad (red)
+static void bad() {
+    ledRed = 0;
+    ledGreen = 1;
+    ledBlue = 1;
+}
 
-    cellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, 230400, false);
+// Toggle green
+static void toggleGreen() {
+    ledGreen = !ledGreen;
+}
 
-    printf("Initialising cellular...\n");
-    if (cellular->init()) {
-        printf("Please wait up to 180 seconds to connect to the packet network...\n");
-        if (cellular->connect() == NSAPI_ERROR_OK) {
-            success = true;
-        } else {
-            printf("Unable to connect to the cellular packet network.\n");
-        }
-    } else {
-        printf("Unable to initialise cellular.\n");
-    }
+// All off
+static void ledOff() {
+    ledBlue = 1;
+    ledRed = 1;
+    ledGreen = 1;
+}
 
-    return success;
+static void cloudClientRegisteredCallback() {
+    ledBlue = 0;
+}
+
+static void cloudClientDeregisteredCallback() {
+    ledBlue = 1;
 }
 
 static void heapStats()
@@ -97,26 +107,27 @@ static void setThing(bool value)
 
 int main() {
     int x;
-    M2MObjectList objectList;
 
-    ledGreen = 0;
+    good();
     printf("Making sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
 
     printf("Starting SD card...\n");
     x = sd.init();
     if(x != 0) {
+        bad();
         printf("Error initialising SD card (%d).\n", x);
         return -1;
     }
-    printf("SD card started...\n");
+    printf("SD card started.\n");
 
     printf("Initialising file storage...\n");
     fcc_status_e status = fcc_init();
     if(status != FCC_STATUS_SUCCESS) {
+        bad();
         printf("Error initialising file storage (%d).\n", status);
         return -1;
     }
-    printf("File storage initialised...\n");
+    printf("File storage initialised.\n");
 
     // Resets storage to an empty state.
     // Use this function when you want to clear storage from all the factory-tool generated data and user data.
@@ -131,11 +142,12 @@ int main() {
 #endif
 
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-    printf("Starting developer flow.\n");
+    printf("Starting developer flow...\n");
     status = fcc_developer_flow();
     if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
         printf("Developer credentials already exist.\n");
     } else if (status != FCC_STATUS_SUCCESS) {
+        bad();
         printf("Failed to load developer credentials.\n");
         return -1;
     }    
@@ -144,15 +156,34 @@ int main() {
     printf("Checking configuration...\n");
     status = fcc_verify_device_configured_4mbed_cloud();
     if (status != FCC_STATUS_SUCCESS) {
+        bad();
         printf("Device not configured for mbed Cloud.\n");
         return -1;
     }
 
-    // Print some statistics of the object sizes and heap memory consumption
-    heapStats();
+    // Note sure if this is required or not
+    srand(time(NULL));
 
+    printf("Initialising cellular...\n");
+    UbloxPPPCellularInterface *cellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, 230400, false);
+    if (cellular->init()) {
+        printf("Please wait up to 180 seconds to connect to the packet network...\n");
+        if (cellular->connect() != NSAPI_ERROR_OK) {
+            bad();
+            printf("Unable to connect to the cellular packet network.\n");
+            return -1;
+        }
+    } else {
+        bad();
+        printf("Unable to initialise cellular.\n");
+        return -1;
+    }
+
+    heapStats();
     printf("Initialising cloud client...\n");
-    CloudClientDm *cloudClientDm = new CloudClientDm(true);
+    CloudClientDm *cloudClientDm = new CloudClientDm(true,
+                                                     &cloudClientRegisteredCallback,
+                                                     &cloudClientDeregisteredCallback);
     printf("Configuring Device object...\n");
     // TODO add resources
 
@@ -160,34 +191,42 @@ int main() {
     IocCtrlPowerControl *powerControl = new IocCtrlPowerControl(true,
                                                                 setThing,
                                                                 true);
-    objectList.push_back(powerControl->getObject());
+    cloudClientDm->addObject(powerControl->getObject());
+
     printf("Starting Device object...\n");
-    if (cloudClientDm->start(&objectList)) {
-        if (init_connection()) {
-            printf("Connecting to LWM2M server...\n");
-            if (cloudClientDm->connect(cellular)) {
-                printf("Connected to LWM2M server.\n");
-                ledGreen = 1;
-                ledBlue = 0;
-            } else {
-                printf("Unable to connect to LWM2M server.\n");
+    if (cloudClientDm->start(powerControl)) {
+        printf("Connecting to LWM2M server...\n");
+        if (cloudClientDm->connect(cellular)) {
+            printf("Connected to LWM2M server, waiting for 60 seconds...\n");
+            for (x = 0; x < 60; x++) {
+                wait_ms(1000);
+                toggleGreen();
             }
+        } else {
+            bad();
+            printf("Unable to connect to LWM2M server.\n");
+            return -1;
         }
     } else {
+        bad();
         printf("Error starting cloud client.\n");
+        return -1;
     }
+
     printf("Stopping cloud client...\n");
     cloudClientDm->stop();
+    printf("Deleting cloud client and objects...\n");
+    delete cloudClientDm;
+    delete powerControl;
+    heapStats();
+
     printf("Disconnecting network...\n");
     cellular->disconnect();
     printf("Stopping modem...\n");
     cellular->deinit();
     delete cellular;
-    printf("Deleting cloud client and objects...\n");
-    delete cloudClientDm;
-    delete powerControl;
-    heapStats();
     printf("All stop.\n");
+    ledOff();
 }
 
 // End of file
