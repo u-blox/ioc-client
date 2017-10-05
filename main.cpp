@@ -101,6 +101,18 @@ static void setThing(bool value)
     printf("Thing set to %d.\n", value);
 }
 
+static bool getLocation(IocCtrlLocation::Location *data)
+{
+    data->latitudeDegrees = 1.00;
+    data->longitudeDegrees = 2.00;
+    data->radiusMetres = 5;
+    data->altitudeMetres = 3;
+    data->speedMPS = 0;
+    data->timestampUnix = 0x7F123456;
+
+    return true;
+}
+
 /* ----------------------------------------------------------------
  * FUNCTIONS
  * -------------------------------------------------------------- */
@@ -188,10 +200,10 @@ int main() {
     // TODO add resources
 
     printf("Creating all the other objects...\n");
-    IocCtrlPowerControl *powerControl = new IocCtrlPowerControl(true,
-                                                                setThing,
-                                                                true);
+    IocCtrlPowerControl *powerControl = new IocCtrlPowerControl(true, setThing, true);
     cloudClientDm->addObject(powerControl->getObject());
+    IocCtrlLocation *location = new IocCtrlLocation(true, getLocation);
+    cloudClientDm->addObject(location->getObject());
 
     printf("Starting Device object...\n");
     if (cloudClientDm->start(powerControl)) {
@@ -218,6 +230,7 @@ int main() {
     printf("Deleting cloud client and objects...\n");
     delete cloudClientDm;
     delete powerControl;
+    delete location;
     heapStats();
 
     printf("Disconnecting network...\n");

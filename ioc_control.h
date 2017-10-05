@@ -50,11 +50,99 @@
  *       - Percent (urn:oma:lwm2m:ext:3320), used to contain the percentage of sends that took longer than a block.
  */
 
+/**********************************************************************
+ * HELPER CLASS
+ **********************************************************************/
+
+/** Helper to make all the others simpler.
+ */
+class IocCtrlHelper {
+public:
+
+protected:
+
+    /** The maximum length of an object
+     * name or resource name.
+     */
+#   define MAX_OBJECT_RESOURCE_NAME_LENGTH 8
+
+    /** The maximum length of the string
+     * representation of a resource type.
+     */
+#   define MAX_RESOURCE_TYPE_LENGTH 20
+
+    /** The maximum number of resources
+     * an object can have.
+     */
+#   define MAX_NUM_RESOURCES 8
+
+    /** Format for all values in degrees.
+     */
+#   define FORMAT_DEGREES "%6.6f"
+
+    /** Format for all values in metres.
+     */
+#   define FORMAT_METRES "%6f"
+
+    /** Format for all values of speed.
+     */
+#   define FORMAT_SPEED "%6f"
+
+    /** Format for a UNIX timestamp.
+     */
+#   define FORMAT_TIMESTAMP "%dl"
+
+    /** Structure to represent a resource.
+     */
+    typedef struct {
+        const char name[MAX_OBJECT_RESOURCE_NAME_LENGTH];
+        const char typeString[MAX_RESOURCE_TYPE_LENGTH];
+        M2MResourceBase::ResourceType type;
+        bool observable;
+        M2MBase::Operation operation;
+    } DefResource;
+
+    /** Structure to represent an object.
+     */
+    typedef struct {
+        char name[MAX_OBJECT_RESOURCE_NAME_LENGTH];
+        int numResources;
+        DefResource resources[MAX_NUM_RESOURCES];
+    } DefObject;
+
+    /** Constructor.
+     */
+    IocCtrlHelper(bool debugOn);
+
+    /** Destructor.
+     */
+    ~IocCtrlHelper();
+
+    /** Create an object.
+     *
+     * @param defObject pointer to the object definition.
+     * @return          a pointer to the created object.
+     */
+    M2MObject *makeObject(const DefObject *defObject);
+
+    /** Set to true to have debug prints.
+     */
+    bool _debugOn;
+
+    /** Need this for the types.
+     */
+    friend class M2MBase;
+};
+
+/**********************************************************************
+ * POWER CONTROL OBJECT
+ **********************************************************************/
+
 /** Control the power state of the device.
  * Implementation is according to urn:oma:lwm2m:ext:3312
  * with only the mandatory resource (on/off).
  */
-class IocCtrlPowerControl : public MbedCloudClientCallback {
+class IocCtrlPowerControl : public MbedCloudClientCallback, private IocCtrlHelper {
 public:
 
     /** Constructor.
@@ -86,14 +174,14 @@ public:
 
 protected:
 
-    /** The object number for this object.
-     */
-#   define OBJECT_NUMBER "3312"
-
     /** The resource number for the only resource
      * in this object: the on/off switch.
      */
 #   define RESOURCE_NUMBER_POWER_SWITCH "5850"
+
+    /** Definition of this object.
+     */
+    static const DefObject _defObject;
 
     /** Set to true to have debug prints.
      */
@@ -103,7 +191,93 @@ protected:
      */
     Callback<void(bool)> _setCallback;
 
-    /** The power control object.
+    /** The LWM2M object.
+     */
+    M2MObject *_object;
+};
+
+/**********************************************************************
+ * LOCATION OBJECT
+ **********************************************************************/
+
+/** Report location.
+ * Implementation is according to urn:oma:lwm2m:oma:6
+ * with all optional resources included except velocity.
+ */
+class IocCtrlLocation : private IocCtrlHelper  {
+public:
+
+    /** Location structure.
+     */
+    typedef struct {
+        float latitudeDegrees;
+        float longitudeDegrees;
+        float radiusMetres;
+        float altitudeMetres;
+        float speedMPS;
+        int timestampUnix;
+    } Location;
+
+    /** Constructor.
+     *
+     * @param debugOn      true if you want debug prints, otherwise false.
+     * @param getCallback  callback to get location information
+     */
+    IocCtrlLocation(bool debugOn, Callback<bool(Location*)> getCallback);
+
+    /** Destructor.
+     */
+    virtual ~IocCtrlLocation();
+
+    /** Return this object.
+     *
+     * @return pointer to this object.
+     */
+    M2MObject * getObject();
+
+protected:
+
+    /** Update the reportable data.
+     */
+    void updateData();
+
+    /** The resource number for latitude.
+     */
+#   define RESOURCE_NUMBER_LATITUDE "0"
+
+    /** The resource number for longitude.
+     */
+#   define RESOURCE_NUMBER_LONGITUDE "1"
+
+    /** The resource number for radius.
+     */
+#   define RESOURCE_NUMBER_RADIUS "3"
+
+    /** The resource number for altitude.
+     */
+#   define RESOURCE_NUMBER_ALTITUDE "2"
+
+    /** The resource number for speed.
+     */
+#   define RESOURCE_NUMBER_SPEED "6"
+
+    /** The resource number for timestamp.
+     */
+#   define RESOURCE_NUMBER_TIMESTAMP "5"
+
+    /** Definition of this object.
+     */
+    static const DefObject _defObject;
+
+    /** Set to true to have debug prints.
+     */
+    bool _debugOn;
+
+    /** Callback to obtain location information.
+     */
+    Callback<bool(Location*)> _getCallback;
+
+    /** The LWM2M object.
      */
     M2MObject *_object;
 };
