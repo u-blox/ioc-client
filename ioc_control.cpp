@@ -107,8 +107,7 @@ IocCtrlPowerControl::IocCtrlPowerControl(bool debugOn,
 // Destructor.
 IocCtrlPowerControl::~IocCtrlPowerControl()
 {
-    // TODO: find out why clearing up crashes things
-    //delete _object;
+    delete _object;
 }
 
 // MbedCloudClientCallback.
@@ -174,8 +173,7 @@ IocCtrlLocation::IocCtrlLocation(bool debugOn,
 // Destructor.
 IocCtrlLocation::~IocCtrlLocation()
 {
-    // TODO: find out why clearing up crashes things
-    // delete _object;
+    delete _object;
 }
 
 // Update the reportable data for this object.
@@ -292,8 +290,7 @@ IocCtrlTemperature::IocCtrlTemperature(bool debugOn,
 // Destructor.
 IocCtrlTemperature::~IocCtrlTemperature()
 {
-    // TODO: find out why clearing up crashes things
-    // delete _object;
+    delete _object;
 }
 
 // Update the reportable data for this object.

@@ -221,7 +221,7 @@ int main() {
     IocCtrlTemperature *temperature = new IocCtrlTemperature(true, getTemperature, resetMinMax, -10, +120, "cel");
     cloudClientDm->addObject(temperature->getObject());
 
-    printf("Starting Device object...\n");
+    printf("Starting cloud client...\n");
     if (cloudClientDm->start(powerControl)) {
         printf("Connecting to LWM2M server...\n");
         if (cloudClientDm->connect(cellular)) {
@@ -243,11 +243,12 @@ int main() {
 
     printf("Stopping cloud client...\n");
     cloudClientDm->stop();
-    printf("Deleting cloud client and objects...\n");
-    delete cloudClientDm;
+    printf("Deleting objects...\n");
     delete powerControl;
     delete location;
     delete temperature;
+    printf("Deleting cloud client...\n");
+    delete cloudClientDm;
     heapStats();
 
     printf("Disconnecting network...\n");
