@@ -13,9 +13,9 @@
 //----------------------------------------------------------------------------
 
 #include "mbed.h"
+#include "factory_configurator_client.h"
 #include "SDBlockDevice.h"
 #include "UbloxPPPCellularInterface.h"
-#include "factory_configurator_client.h"
 #include "cloud_client_dm.h"
 #include "ioc_control.h"
 #include "urtp.h"
@@ -27,6 +27,8 @@
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
+
+#define DEBUG_ON true
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -42,10 +44,27 @@ static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
 extern SDBlockDevice sd;     // in pal_plat_fileSystem.cpp
 
+IocCtrlConfig::Config configData = {3600.0, // initWakeUpTickPeriod
+                                    2, // initWakeUpCount
+                                    60.0, // normalWakeUpTickPeriod
+                                    60, // normalWakeUpCount
+                                    600.0, // batteryWakeUpTickPeriod
+                                    true}; // gnssEnable
+
+IocCtrlAudio::Audio audioData = {false, // streamingEnabled
+                                 -1.0, // duration
+                                 -1.0, // fixedGain
+                                 1, // audioCommunicationsMode
+                                 "ciot.it-sgn.u-blox.com:8080"}; //audioServerUrl
+
+IocCtrlDiagnostics::Diagnostics diagnosticsData = {-1};
+
 // LEDs
 static DigitalOut ledRed(LED1, 1);
 static DigitalOut ledGreen(LED2, 1);
 static DigitalOut ledBlue(LED3, 1);
+
+volatile bool buttonPressed = false;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -101,7 +120,7 @@ static void setThing(bool value)
     printf("Thing set to %d.\n", value);
 }
 
-static bool getLocation(IocCtrlLocation::Location *data)
+static bool getLocationData(IocCtrlLocation::Location *data)
 {
     data->latitudeDegrees = 1.00;
     data->longitudeDegrees = 2.00;
@@ -113,7 +132,7 @@ static bool getLocation(IocCtrlLocation::Location *data)
     return true;
 }
 
-static bool getTemperature(IocCtrlTemperature::Temperature *data)
+static bool getTemperatureData(IocCtrlTemperature::Temperature *data)
 {
     data->temperature = 32;
     data->minTemperature = 5;
@@ -127,15 +146,80 @@ static void resetMinMax()
     printf("Received min/max temperature reset.\n");
 }
 
+static void setConfigData(IocCtrlConfig::Config *data)
+{
+    printf("Received new config settings:\n");
+    printf("  initWakeUpTickPeriod %f.\n", data->initWakeUpTickPeriod);
+    printf("  initWakeUpCount %lld.\n", data->initWakeUpCount);
+    printf("  normalWakeUpTickPeriod %f.\n", data->normalWakeUpTickPeriod);
+    printf("  normalWakeUpCount %lld.\n", data->normalWakeUpCount);
+    printf("  batteryWakeUpTickPeriod %f.\n", data->batteryWakeUpTickPeriod);
+    printf("  GNSS enable %d.\n", data->gnssEnable);
+
+    configData = *data;
+}
+
+static void setAudioData(IocCtrlAudio::Audio *data)
+{
+    printf("Received new audio parameters:\n");
+    printf("  streamingEnabled %d.\n", data->streamingEnabled);
+    printf("  duration %f.\n", data->duration);
+    printf("  fixedGain %f.\n", data->fixedGain);
+    printf("  audioCommunicationsMode %lld.\n", data->audioCommunicationsMode);
+    printf("  audioServerUrl \"%s\".\n", data->audioServerUrl.c_str());
+
+    audioData = *data;
+}
+
+static bool getDiagnosticsData(IocCtrlDiagnostics::Diagnostics *data)
+{
+    data->upTime = 100;
+    data->worstCaseSendDuration = 0.999;
+    data->averageSendDuration = 0.015;
+    data->minNumDatagramsFree = 50;
+    data->numSendFailures = 2;
+    data->percentageSendsTooLong = 25;
+
+    return true;
+}
+
+class UpdateCallback : public MbedCloudClientCallback {
+public:
+    UpdateCallback() {
+    }
+
+    virtual ~UpdateCallback() {
+    }
+
+    // Implementation of MbedCloudClientCallback
+    virtual void value_updated(M2MBase *base, M2MBase::BaseType type) {
+        printf("UNHANDLED  PUT request, name: \"%s\", path: \"%s\","
+               " type: \"%d\" (0 for object, 1 for resource), type: \"%s\".\n",
+               base->name(), base->uri_path(), type, base->resource_type());
+    }
+};
+
+static UpdateCallback *cloudClientGlobalUpdateCallback = new UpdateCallback();
+
+// Something to attach to the button
+static void buttonCallback()
+{
+    buttonPressed = true;
+}
+
 /* ----------------------------------------------------------------
  * FUNCTIONS
  * -------------------------------------------------------------- */
 
 int main() {
+    InterruptIn userButton(SW0);
     int x;
 
     good();
     printf("Making sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
+
+    // Attach a function to the user button
+    userButton.rise(&buttonCallback);
 
     printf("Starting SD card...\n");
     x = sd.init();
@@ -211,22 +295,28 @@ int main() {
                                                      &cloudClientRegisteredCallback,
                                                      &cloudClientDeregisteredCallback);
     printf("Configuring Device object...\n");
-    // TODO add resources
+    // TODO add resources to device object
 
     printf("Creating all the other objects...\n");
-    IocCtrlPowerControl *powerControl = new IocCtrlPowerControl(true, setThing, true);
-    cloudClientDm->addObject(powerControl->getObject());
-    IocCtrlLocation *location = new IocCtrlLocation(true, getLocation);
-    cloudClientDm->addObject(location->getObject());
-    IocCtrlTemperature *temperature = new IocCtrlTemperature(true, getTemperature, resetMinMax, -10, +120, "cel");
-    cloudClientDm->addObject(temperature->getObject());
+    IocCtrlPowerControl *powerControlObject = new IocCtrlPowerControl(DEBUG_ON, setThing, true);
+    cloudClientDm->addObject(powerControlObject->getObject());
+    IocCtrlLocation *locationObject = new IocCtrlLocation(DEBUG_ON, getLocationData);
+    cloudClientDm->addObject(locationObject->getObject());
+    IocCtrlTemperature *temperatureObject = new IocCtrlTemperature(DEBUG_ON, getTemperatureData, resetMinMax, -10, +120, "cel");
+    cloudClientDm->addObject(temperatureObject->getObject());
+    IocCtrlConfig *configObject = new IocCtrlConfig(DEBUG_ON, setConfigData, &configData);
+    cloudClientDm->addObject(configObject->getObject());
+    IocCtrlAudio *audioObject = new IocCtrlAudio(DEBUG_ON, setAudioData, &audioData);
+    cloudClientDm->addObject(audioObject->getObject());
+    IocCtrlDiagnostics *diagnosticsObject = new IocCtrlDiagnostics(DEBUG_ON, getDiagnosticsData);
+    cloudClientDm->addObject(diagnosticsObject->getObject());
 
     printf("Starting cloud client...\n");
-    if (cloudClientDm->start(powerControl)) {
+    if (cloudClientDm->start(cloudClientGlobalUpdateCallback)) {
         printf("Connecting to LWM2M server...\n");
         if (cloudClientDm->connect(cellular)) {
-            printf("Connected to LWM2M server, waiting for 60 seconds...\n");
-            for (x = 0; x < 60; x++) {
+            printf("Connected to LWM2M server, registration should occur soon; press the user button to exit.\n");
+            for (x = 0; !buttonPressed; x++) {
                 wait_ms(1000);
                 toggleGreen();
             }
@@ -244,9 +334,12 @@ int main() {
     printf("Stopping cloud client...\n");
     cloudClientDm->stop();
     printf("Deleting objects...\n");
-    delete powerControl;
-    delete location;
-    delete temperature;
+    delete powerControlObject;
+    delete locationObject;
+    delete temperatureObject;
+    delete configObject;
+    delete audioObject;
+    delete diagnosticsObject;
     printf("Deleting cloud client...\n");
     delete cloudClientDm;
     heapStats();
