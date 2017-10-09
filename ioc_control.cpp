@@ -642,12 +642,12 @@ void IocCtrlConfig::objectUpdated(const char *resourceName)
                                  RESOURCE_NUMBER_GNSS_ENABLE));
 
     printfLog("IocCtrlConfig: new config is:\n");
-    printfLog("               initWakeUpTickPeriod %f.\n", config.initWakeUpTickPeriod);
-    printfLog("               initWakeUpCount %d.\n", config.initWakeUpCount);
-    printfLog("               normalWakeUpTickPeriod %f.\n", config.normalWakeUpTickPeriod);
-    printfLog("               normalWakeUpCount %d.\n", config.normalWakeUpCount);
-    printfLog("               batteryWakeUpTickPeriod %f.\n", config.batteryWakeUpTickPeriod);
-    printfLog("               GNSS enable %d.\n", config.gnssEnable);
+    printfLog("  initWakeUpTickPeriod %f.\n", config.initWakeUpTickPeriod);
+    printfLog("  initWakeUpCount %d.\n", config.initWakeUpCount);
+    printfLog("  normalWakeUpTickPeriod %f.\n", config.normalWakeUpTickPeriod);
+    printfLog("  normalWakeUpCount %d.\n", config.normalWakeUpCount);
+    printfLog("  batteryWakeUpTickPeriod %f.\n", config.batteryWakeUpTickPeriod);
+    printfLog("  GNSS enable %d.\n", config.gnssEnable);
 
     if (_setCallback) {
         _setCallback(&config);
@@ -710,11 +710,11 @@ void IocCtrlAudio::objectUpdated(const char *resourceName)
     MBED_ASSERT(getResourceValue(&audio.audioServerUrl, RESOURCE_NUMBER_AUDIO_SERVER_URL));
 
     printfLog("IocCtrlAudio: new audio parameters are:\n");
-    printfLog("              streamingEnabled %d.\n", audio.streamingEnabled);
-    printfLog("              duration %f (-1 == no limit).\n", audio.duration);
-    printfLog("              fixedGain %f (-1 == use automatic gain).\n", audio.fixedGain);
-    printfLog("              audioCommunicationsMode %d (0 for UDP, 1 for TCP).\n", audio.audioCommunicationsMode);
-    printfLog("              audioServerUrl \"%s\".\n", audio.audioServerUrl.c_str());
+    printfLog("  streamingEnabled %d.\n", audio.streamingEnabled);
+    printfLog("  duration %f (-1 == no limit).\n", audio.duration);
+    printfLog("  fixedGain %f (-1 == use automatic gain).\n", audio.fixedGain);
+    printfLog("  audioCommunicationsMode %d (0 for UDP, 1 for TCP).\n", audio.audioCommunicationsMode);
+    printfLog("  audioServerUrl \"%s\".\n", audio.audioServerUrl.c_str());
 
     if (_setCallback) {
         _setCallback(&audio);
