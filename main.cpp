@@ -216,7 +216,7 @@ int main() {
     int x;
 
     good();
-    printf("Making sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
+    printf("\nMaking sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
 
     // Attach a function to the user button
     userButton.rise(&buttonCallback);

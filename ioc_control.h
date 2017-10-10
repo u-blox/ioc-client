@@ -1,16 +1,21 @@
-//----------------------------------------------------------------------------
-// The confidential and proprietary information contained in this file may
-// only be used by a person authorised under and to the extent permitted
-// by a subsisting licensing agreement from ARM Limited or its affiliates.
-//
-// (C) COPYRIGHT 2016 ARM Limited or its affiliates.
-// ALL RIGHTS RESERVED
-//
-// This entire notice must be reproduced on all copies of this file
-// and copies of this file may only be made by a person if such person is
-// permitted to do so under the terms of a subsisting license agreement
-// from ARM Limited or its affiliates.
-//----------------------------------------------------------------------------
+/* mbed Microcontroller Library
+ * Copyright (c) 2017 u-blox
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "mbed.h"
+#include "MbedCloudClient.h"
+#include "m2m_object_helper.h"
 
 #ifndef _IOC_CONTROL_
 #define _IOC_CONTROL_
@@ -23,209 +28,6 @@
  */
 
 /**********************************************************************
- * BASE CLASS
- **********************************************************************/
-
-/** Base class to make all the other classes simpler.
- */
-class IocCtrlBase {
-public:
-
-    /** Destructor.
-     */
-    virtual ~IocCtrlBase();
-
-    /** Update this objects' resources.
-     * Derived classes should implement
-     * this function (and make a call to
-     * setCallback()) if they have observable
-     * resources which need to be updated from
-     * somewhere (e.g. the temperature has
-     * changed).
-     */
-    virtual void updateObservableResources();
-
-    /** Return this object.
-     *
-     * @return pointer to this object.
-     */
-    M2MObject *getObject();
-
-protected:
-
-    /** The maximum length of an object
-     * name or resource name.
-     */
-#   define MAX_OBJECT_RESOURCE_NAME_LENGTH 8
-
-    /** The maximum length of the string
-     * representation of a resource type.
-     */
-#   define MAX_RESOURCE_TYPE_LENGTH 20
-
-    /** The maximum number of resources
-     * an object can have.
-     */
-#   define MAX_NUM_RESOURCES 8
-
-    /** Format for all values in degrees.
-     */
-#   define FORMAT_DEGREES "%6.6f"
-
-    /** Format for all values in metres.
-     */
-#   define FORMAT_METRES "%6.0f"
-
-    /** Format for all values of speed.
-     */
-#   define FORMAT_SPEED "%6.0f"
-
-    /** Format for temperature.
-     */
-#   define FORMAT_TEMPERATURE "%3.1f"
-
-    /** Format for all values in seconds.
-     */
-#   define FORMAT_SECONDS "%6.3f"
-
-    /** Format for gain.
-     */
-#   define FORMAT_GAIN "%6.1f"
-
-    /** Format if no format is defined.
-     */
-#   define FORMAT_DEFAULT "%6.6f"
-
-    /** Structure to represent a resource.
-     */
-    typedef struct {
-        int instance; ///< use -1 if there is only a single instance
-        const char name[MAX_OBJECT_RESOURCE_NAME_LENGTH]; ///< the name, e.g. "3303"
-        const char typeString[MAX_RESOURCE_TYPE_LENGTH]; ///< the type. e.g. "on/off"
-        M2MResourceBase::ResourceType type;
-        bool observable; ///< true if the object is observable, otherwise false
-        M2MBase::Operation operation;
-        const char * format; ///< format string, required if type is FLOAT
-    } DefResource;
-
-    /** Structure to represent an object.
-     */
-    typedef struct {
-        char name[MAX_OBJECT_RESOURCE_NAME_LENGTH];
-        int numResources;
-        DefResource resources[MAX_NUM_RESOURCES];
-    } DefObject;
-
-    /** Constructor.
-     *
-     * @param debugOn                true to switch debug prints on,
-     *                               otherwise false.
-     * @param defObject              the definition of the LWM2M object.
-     * @param value_updated_callback callback to be called if any
-     *                               resource in this object is written
-     *                               to; the callback will receive the
-     *                               resource number as a string so that
-     *                               if finer-grained action can be
-     *                               performed if required.
-     */
-    IocCtrlBase(bool debugOn, const DefObject *defObject, value_updated_callback valueUpdatedCallback = NULL);
-
-    /** Create an object as defined in the defObject
-     * structure passed in in the constructor. This
-     * must be called before any of the other
-     * functions can be called.
-     *
-     * @return  true if successful, otherwise false.
-     */
-    bool makeObject();
-
-    /** Set the execute callback (for an executable resource).
-     *
-     * @param callback the callback.
-     * @return         true if successful, otherwise false.
-     */
-    bool setExecuteCallback(execute_callback callback,
-                            const char * resourceNumber);
-
-    /** Set the value of a given resource in an object.
-     *
-     * @param value            pointer to the value of the
-     *                         resource to set. If the
-     *                         resource is of type STRING,
-     *                         value should be a pointer to
-     *                         String, if the resource
-     *                         is of type INTEGER, value
-     *                         should be a pointer to int64_t,
-     *                         if the resource is of type FLOAT,
-     *                         value should be a pointer to
-     *                         float and if the resource is of
-     *                         type BOOLEAN the value should
-     *                         be a pointer to bool. YOU HAVE TO
-     *                         GET THIS RIGHT, THERE IS NO
-     *                         WAY FOR THE COMPILER TO CHECK.
-     * @param resourceNumber   the number of the resource whose
-     *                         value is to be set.
-     * @param resourceInstance the resource instance if there
-     *                         is more than one.
-     * @return                 true if successful, otherwise
-     *                         false.
-     */
-    bool setResourceValue(const void * value,
-                          const char * resourceNumber,
-                          int resourceInstance = -1);
-
-    /** Get the value of a given resource in an object.
-     *
-     * @param value            pointer to a place to put
-     *                         the resource value.  If
-     *                         the resource is of type STRING,
-     *                         value should be a pointer to
-     *                         String (NOT char *), if the
-     *                         resource is of type INTEGER,
-     *                         value should be a pointer to
-     *                         int64_t, if the resource is of
-     *                         type FLOAT, value should be a
-     *                         pointer to float and if the
-     *                         resource is of type BOOLEAN
-     *                         the value should be a pointer
-     *                         to bool. YOU HAVE TO GET THIS
-     *                         RIGHT, THERE IS NO WAY FOR THE
-     *                         COMPILER TO CHECK.
-     * @param resourceNumber   the number of the resource whose
-     *                         value is to be set.
-     * @param resourceInstance the resource instance if there
-     *                         is more than one.
-     * @return                 true if successful, otherwise
-     *                         false.
-     */
-    bool getResourceValue(void * value,
-                          const char * resourceNumber,
-                          int resourceInstance = -1);
-
-    /** True if debug is on, otherwise false.
-     */
-    bool _debugOn;
-
-    /** The definition for this object.
-     */
-    const DefObject *_defObject;
-
-    /** The LWM2M object.
-     */
-    M2MObject *_object;
-
-    /** The value updated callback set to NULL where there
-     * is none.  Required if the object includes a writable
-     * object.
-     */
-    value_updated_callback _valueUpdatedCallback;
-
-    /** Need this for the types.
-     */
-    friend class M2MBase;
-};
-
-/**********************************************************************
  * POWER CONTROL OBJECT
  **********************************************************************/
 
@@ -233,7 +35,7 @@ protected:
  * Implementation is according to urn:oma:lwm2m:ext:3312
  * with only the mandatory resource (on/off).
  */
-class IocCtrlPowerControl : public IocCtrlBase {
+class IocCtrlPowerControl : public M2MObjectHelper {
 public:
 
     /** Constructor.
@@ -280,8 +82,24 @@ protected:
  * Implementation is according to urn:oma:lwm2m:oma:6
  * with all optional resources included except velocity.
  */
-class IocCtrlLocation : public IocCtrlBase  {
+class IocCtrlLocation : public M2MObjectHelper  {
 public:
+
+    /** Format for all values in degrees.
+     */
+#   define FORMAT_DEGREES "%6.6f"
+
+    /** Format for all values in metres.
+     */
+#   define FORMAT_METRES "%6.0f"
+
+    /** Format for all values of speed.
+     */
+#   define FORMAT_SPEED "%6.0f"
+
+    /** Format for temperature.
+     */
+#   define FORMAT_TEMPERATURE "%3.1f"
 
     /** Location structure.
      */
@@ -291,7 +109,7 @@ public:
         float radiusMetres;
         float altitudeMetres;
         float speedMPS;
-        int timestampUnix;
+        int64_t timestampUnix;
     } Location;
 
     /** Constructor.
@@ -352,7 +170,7 @@ protected:
  * Implementation is according to urn:oma:lwm2m:ext:3303
  * with all optional resources included.
  */
-class IocCtrlTemperature : public IocCtrlBase  {
+class IocCtrlTemperature : public M2MObjectHelper  {
 public:
 
     /** Temperature structure.
@@ -445,7 +263,7 @@ protected:
  * Implementation is as a custom object, I have chosen
  * ID urn:oma:lwm2m:x:32769, with writable resources.
  */
-class IocCtrlConfig : public IocCtrlBase {
+class IocCtrlConfig : public M2MObjectHelper {
 public:
 
     /** Configuration values
@@ -545,7 +363,7 @@ protected:
  * Implementation is as a custom object, I have chosen
  * ID urn:oma:lwm2m:x:32770, with writable resources.
  */
-class IocCtrlAudio : public IocCtrlBase {
+class IocCtrlAudio : public M2MObjectHelper {
 public:
 
     /** The audio communication mode options.
@@ -636,7 +454,7 @@ protected:
 /** Diagnostics reporting.
  * Implementation is as a custom object, I have chosen ID urn:oma:lwm2m:x:32771.
  */
-class IocCtrlDiagnostics : public IocCtrlBase {
+class IocCtrlDiagnostics : public M2MObjectHelper {
 public:
 
     /** The diagnostics information (with types that match
