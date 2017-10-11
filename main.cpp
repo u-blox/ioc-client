@@ -173,6 +173,7 @@ static void heapStats()
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
 static void cloudClientRegisteredCallback() {
+    printf("Press the user button to exit.\n");
     ledBlue = 0;
 }
 
@@ -299,52 +300,53 @@ static bool init(bool resetStorage)
 
     printf("Starting SD card...\n");
     int sdError = sd.init();
-    if(sdError != 0) {
+    if (sdError != 0) {
         bad();
         printf("Error initialising SD card (%d).\n", sdError);
         return false;
     }
     printf("SD card started.\n");
 
-    printf("Initialising file storage...\n");
+    printf("Initialising Mbed Cloud Client file storage...\n");
     fcc_status_e status = fcc_init();
     if(status != FCC_STATUS_SUCCESS) {
         bad();
-        printf("Error initialising file storage (%d).\n", status);
+        printf("Error initialising Mbed Cloud Client file storage (%d).\n", status);
         return false;
     }
-    printf("File storage initialised.\n");
+    printf("Mbed Cloud Client file storage initialised.\n");
 
-    // Use this function when you want to clear storage from all
-    // the factory-tool generated data and user data.
-    // After this operation device must be injected again by using
-    // factory tool or developer certificate.
     if (resetStorage) {
-        printf("Reseting storage to an empty state...\n");
+        // Use this function when you want to clear storage from all
+        // the factory-tool generated data and user data.
+        // After this operation device must be injected again by using
+        // factory tool or developer certificate.
+        printf("Resetting Mbed Cloud Client storage to an empty state...\n");
         fcc_status_e deleteStatus = fcc_storage_delete();
         if (deleteStatus != FCC_STATUS_SUCCESS) {
-            printf("Failed to delete storage - %d\n", deleteStatus);
+            bad();
+            printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
             return false;
         }
     }
 
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-    printf("Starting developer flow...\n");
+    printf("Starting Mbed Cloud Client developer flow...\n");
     status = fcc_developer_flow();
     if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
-        printf("Developer credentials already exist.\n");
+        printf("Mbed Cloud Client developer credentials already exist.\n");
     } else if (status != FCC_STATUS_SUCCESS) {
         bad();
-        printf("Failed to load developer credentials.\n");
+        printf("Failed to load Mbed Cloud Clientdeveloper credentials.\n");
         return false;
     }    
 #endif
 
-    printf("Checking configuration...\n");
+    printf("Checking Mbed Cloud Client configuration files...\n");
     status = fcc_verify_device_configured_4mbed_cloud();
     if (status != FCC_STATUS_SUCCESS) {
         bad();
-        printf("Device not configured for mbed Cloud.\n");
+        printf("Device not configured for Mbed Cloud Client.\n");
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
         printf("  You might want to clear mbed Cloud Client file storage and try again.\n");
 #endif
@@ -355,10 +357,7 @@ static bool init(bool resetStorage)
     srand(time(NULL));
 
     printf("Initialising cellular...\n");
-    UbloxPPPCellularInterface *gpCellular = new UbloxPPPCellularInterface(MDMTXD,
-                                                                          MDMRXD,
-                                                                          MODEM_BAUD_RATE,
-                                                                          false);
+    gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE, false);
     if (!gpCellular->init()) {
         bad();
         printf("Unable to initialise cellular.\n");
@@ -373,12 +372,13 @@ static bool init(bool resetStorage)
     }
 
     printf("Initialising Mbed Cloud Client...\n");
-    gpCloudClientDm = new CloudClientDm(DEBUG_ON, &cloudClientRegisteredCallback,
-                                                  &cloudClientDeregisteredCallback);
-    printf("Configuring Device object...\n");
+    gpCloudClientDm = new CloudClientDm(DEBUG_ON,
+                                        &cloudClientRegisteredCallback,
+                                        &cloudClientDeregisteredCallback);
+    printf("Configuring LWM2M Device object...\n");
     // TODO add resources to device object
 
-    printf("Creating all the other objects...\n");
+    printf("Creating all the other LWM2M objects...\n");
     gpPowerControlObject = new IocM2mPowerControl(setPowerControl, true, DEBUG_ON);
     gpCloudClientDm->addObject(gpPowerControlObject->getObject());
     gpLocationObject = new IocM2mLocation(getLocationData, DEBUG_ON);
@@ -387,7 +387,8 @@ static bool init(bool resetStorage)
                                                 executeResetTemperatureMinMax,
                                                 TEMPERATURE_MIN_RANGE,
                                                 TEMPERATURE_MAX_RANGE,
-                                                TEMPERATURE_UNITS, DEBUG_ON);
+                                                TEMPERATURE_UNITS,
+                                                DEBUG_ON);
     gpCloudClientDm->addObject(gpTemperatureObject->getObject());
     gpConfigObject = new IocM2mConfig(setConfigData, &configData, DEBUG_ON);
     gpCloudClientDm->addObject(gpConfigObject->getObject());
@@ -421,46 +422,46 @@ static bool init(bool resetStorage)
 // Anything that was set up in init() should be cleared here.
 static void deinit()
 {
-    if (gpCloudClientDm) {
-        printf("Stopping cloud client...\n");
+    if (gpCloudClientDm != NULL) {
+        printf("Stopping Mbed Cloud Client...\n");
         gpCloudClientDm->stop();
     }
-    printf("Deleting objects...\n");
-    if (gpPowerControlObject) {
+    printf("Deleting LWM2M objects...\n");
+    if (gpPowerControlObject != NULL) {
         delete gpPowerControlObject;
         gpPowerControlObject = NULL;
     }
-    if (gpLocationObject) {
+    if (gpLocationObject != NULL) {
         delete gpLocationObject;
         gpLocationObject = NULL;
     }
-    if (gpTemperatureObject) {
+    if (gpTemperatureObject != NULL) {
         delete gpTemperatureObject;
         gpTemperatureObject = NULL;
     }
-    if (gpConfigObject) {
+    if (gpConfigObject != NULL) {
         delete gpConfigObject;
         gpConfigObject = NULL;
     }
-    if (gpAudioObject) {
+    if (gpAudioObject != NULL) {
         delete gpAudioObject;
         gpAudioObject = NULL;
     }
-    if (gpDiagnosticsObject) {
+    if (gpDiagnosticsObject != NULL) {
         delete gpDiagnosticsObject;
         gpDiagnosticsObject = NULL;
     }
 
-    if (gpCloudClientDm) {
-        printf("Deleting cloud client...\n");
+    if (gpCloudClientDm != NULL) {
+        printf("Deleting Mbed Cloud Client...\n");
         delete gpCloudClientDm;
         gpCloudClientDm = NULL;
     }
 
-    if (gpCellular) {
-        printf("Disconnecting network...\n");
+    if (gpCellular != NULL) {
+        printf("Disconnecting from the cellular packet network...\n");
         gpCellular->disconnect();
-        printf("Stopping modem...\n");
+        printf("Stopping cellular modem...\n");
         gpCellular->deinit();
         delete gpCellular;
         gpCellular = NULL;
@@ -470,13 +471,12 @@ static void deinit()
     sd.deinit();
 
     printf("Removing user button...\n");
-    if (gpUserButton) {
+    if (gpUserButton != NULL) {
         delete gpUserButton;
         gpUserButton = NULL;
     }
 
     printf("All stop.\n");
-    ledOff();
 }
 
 /* ----------------------------------------------------------------
@@ -484,20 +484,23 @@ static void deinit()
  * -------------------------------------------------------------- */
 
 int main() {
-    good();
+
     printf("\nMaking sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
 
+    good();
     heapStats();
+
     if (init(CLOUD_CLIENT_RESET_STORAGE)) {
 
-        printf("Press the user button to exit.\n");
         for (int x = 0; !gUserButtonPressed; x++) {
             wait_ms(1000);
             toggleGreen();
         }
         deinit();
     }
+
     heapStats();
+    ledOff();
 }
 
 // End of file
