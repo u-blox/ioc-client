@@ -35,6 +35,10 @@
         "developer-mode": {
             "help": "Enable Developer mode to skip Factory enrollment",
             "value": 1
+        },
+        "apn": {
+            "help": "The APN string to use for this SIM/network, set to 0 if none",
+            "value": "\"jtm2m\""
         }
     }
 }

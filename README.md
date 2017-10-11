@@ -1,3 +1,6 @@
+This README.md is out of date, please ignore
+============================================
+
 The full documentation for this example is [available on the ARM documentation site](https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html)
 
 Basic Instructions For This C030 Hack
@@ -37,7 +40,7 @@ Adding Firmware Update Over The Air To This C030 Hack
 =====================================================
 First, navigate to the `mbed-os\targets\TARGET_STM\TARGET_STM32F4\TARGET_STM32F437xG\device` directory and edit the linker files in the relevant toolchain sub-directory such that `MBED_APP_START 0x08000000` becomes `MBED_APP_START 0x08020400`.
 
-Then follow the instructions at https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html#remotely-update-your-mbed-os-device-firmware but using `mbed-bootloader-ublox-c030.bin` as your bootloader binary.  When you download the initial combined OTA-updateable image, you should see something like the following on your serial terminal:
+Then follow the instructions at https://cloud.mbed.com/docs/v1.2/mbed-cloud-tutorials/getting-started-with-mbed-cloud-client.html#firmware-update but using `mbed-bootloader-ublox-c030.bin` as your bootloader binary (and there's no need for that diff application stuff since you have manually changed the relevant line above).  When you download the initial combined OTA-updateable image, you should see something like the following on your serial terminal:
 
 ```
 [BOOT] Active firmware integrity check:
