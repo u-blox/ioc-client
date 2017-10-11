@@ -17,8 +17,8 @@
 #include "MbedCloudClient.h"
 #include "m2m_object_helper.h"
 
-#ifndef _IOC_CONTROL_
-#define _IOC_CONTROL_
+#ifndef _IOC_M2M_
+#define _IOC_M2M_
 
 /** This file contains the classes that make up the control
  * plane of the IOC device, consisting of LWM2M objects.
@@ -35,28 +35,28 @@
  * Implementation is according to urn:oma:lwm2m:ext:3312
  * with only the mandatory resource (on/off).
  */
-class IocCtrlPowerControl : public M2MObjectHelper {
+class IocM2mPowerControl : public M2MObjectHelper {
 public:
 
     /** Constructor.
      *
-     * @param debugOn      true if you want debug prints, otherwise false.
      * @param setCallback  callback to switch the device on (true) or off (false).
      * @param initialValue the initial state of the switch.
+     * @param debugOn      true if you want debug prints, otherwise false.
      */
-    IocCtrlPowerControl(bool debugOn,
-                        Callback<void(bool)> setCallback,
-                        bool initialValue);
+    IocM2mPowerControl(Callback<void(bool)> setCallback,
+                       bool initialValue,
+                       bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlPowerControl();
+    ~IocM2mPowerControl();
 
     /** Callback for when the object is updated.
      *
-     * @param thing information about the thing.
+     * @param resourceName the resource name.
      */
-    void objectUpdated(const char * thing);
+    void objectUpdated(const char * resourceName);
 
 protected:
 
@@ -82,7 +82,7 @@ protected:
  * Implementation is according to urn:oma:lwm2m:oma:6
  * with all optional resources included except velocity.
  */
-class IocCtrlLocation : public M2MObjectHelper  {
+class IocM2mLocation : public M2MObjectHelper  {
 public:
 
     /** Format for all values in degrees.
@@ -114,14 +114,15 @@ public:
 
     /** Constructor.
      *
-     * @param debugOn      true if you want debug prints, otherwise false.
      * @param getCallback  callback to get location information
+     * @param debugOn      true if you want debug prints, otherwise false.
      */
-    IocCtrlLocation(bool debugOn, Callback<bool(Location *)> getCallback);
+    IocM2mLocation(Callback<bool(Location *)> getCallback,
+                   bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlLocation();
+    ~IocM2mLocation();
 
     /** Update the observable resources (using getCallback()).
      */
@@ -170,7 +171,7 @@ protected:
  * Implementation is according to urn:oma:lwm2m:ext:3303
  * with all optional resources included.
  */
-class IocCtrlTemperature : public M2MObjectHelper  {
+class IocM2mTemperature : public M2MObjectHelper  {
 public:
 
     /** Temperature structure.
@@ -184,22 +185,22 @@ public:
 
     /** Constructor.
      *
-     * @param debugOn              true if you want debug prints, otherwise false.
      * @param getCallback          callback to get location information.
      * @param resetMinMaxCallback  callback to reset the min/max readings.
      * @param minRange             the minimum temperature the sensor can measure.
      * @param units                a string representing the units of temperature used.
+     * @param debugOn              true if you want debug prints, otherwise false.
      */
-    IocCtrlTemperature(bool debugOn,
-                       Callback<bool(Temperature *)> getCallback,
-                       Callback<void(void)> resetMinMaxCallback,
-                       float minRange,
-                       float maxRange,
-                       String units);
+    IocM2mTemperature(Callback<bool(Temperature *)> getCallback,
+                      Callback<void(void)> resetMinMaxCallback,
+                      float minRange,
+                      float maxRange,
+                      String units,
+                      bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlTemperature();
+    ~IocM2mTemperature();
 
     /** Executable function.
      */
@@ -263,7 +264,7 @@ protected:
  * Implementation is as a custom object, I have chosen
  * ID urn:oma:lwm2m:x:32769, with writable resources.
  */
-class IocCtrlConfig : public M2MObjectHelper {
+class IocM2mConfig : public M2MObjectHelper {
 public:
 
     /** Configuration values
@@ -283,17 +284,17 @@ public:
 
     /** Constructor.
      *
-     * @param debugOn       true if you want debug prints, otherwise false.
      * @param setCallback   callback to set the configuration values.
      * @param initialValues the initial state of the configuration values.
+     * @param debugOn       true if you want debug prints, otherwise false.
      */
-    IocCtrlConfig(bool debugOn,
-                  Callback<void(Config *)> setCallback,
-                  Config *initialValues);
+    IocM2mConfig(Callback<void(Config *)> setCallback,
+                 Config *initialValues,
+                 bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlConfig();
+    ~IocM2mConfig();
 
     /** Callback for when the object is updated, which
      * will set the local variables using setCallback().
@@ -363,7 +364,7 @@ protected:
  * Implementation is as a custom object, I have chosen
  * ID urn:oma:lwm2m:x:32770, with writable resources.
  */
-class IocCtrlAudio : public M2MObjectHelper {
+class IocM2mAudio : public M2MObjectHelper {
 public:
 
     /** The audio communication mode options.
@@ -392,17 +393,17 @@ public:
 
     /** Constructor.
      *
-     * @param debugOn       true if you want debug prints, otherwise false.
      * @param setCallback   callback to set the audio parameter values.
      * @param initialValues the initial state of the audio parameter values.
+     * @param debugOn       true if you want debug prints, otherwise false.
      */
-    IocCtrlAudio(bool debugOn,
-                 Callback<void(Audio *)> setCallback,
-                 Audio *initialValues);
+    IocM2mAudio(Callback<void(Audio *)> setCallback,
+                Audio *initialValues,
+                bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlAudio();
+    ~IocM2mAudio();
 
     /** Callback for when the object is updated, which
      * will set the local variables using setCallback().
@@ -454,7 +455,7 @@ protected:
 /** Diagnostics reporting.
  * Implementation is as a custom object, I have chosen ID urn:oma:lwm2m:x:32771.
  */
-class IocCtrlDiagnostics : public M2MObjectHelper {
+class IocM2mDiagnostics : public M2MObjectHelper {
 public:
 
     /** The diagnostics information (with types that match
@@ -471,14 +472,15 @@ public:
 
     /** Constructor.
      *
-     * @param debugOn     true if you want debug prints, otherwise false.
      * @param getCallback callback to get diagnostics information.
+     * @param debugOn     true if you want debug prints, otherwise false.
      */
-    IocCtrlDiagnostics(bool debugOn, Callback<bool(Diagnostics *)> getCallback);
+    IocM2mDiagnostics(Callback<bool(Diagnostics *)> getCallback,
+                      bool debugOn = false);
 
     /** Destructor.
      */
-    ~IocCtrlDiagnostics();
+    ~IocM2mDiagnostics();
 
     /** Update the observable resources (using getCallback()).
      */
@@ -533,6 +535,6 @@ protected:
     Callback<bool(Diagnostics *)> _getCallback;
 };
 
-#endif // _IOC_CONTROL_
+#endif // _IOC_M2M_
 
 // End of file

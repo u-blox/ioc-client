@@ -17,7 +17,7 @@
 #include "SDBlockDevice.h"
 #include "UbloxPPPCellularInterface.h"
 #include "cloud_client_dm.h"
-#include "ioc_control.h"
+#include "ioc_m2m.h"
 #include "urtp.h"
 #include "ioc_log.h"
 #ifdef MBED_HEAP_STATS_ENABLED
@@ -44,20 +44,20 @@ static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
 extern SDBlockDevice sd;     // in pal_plat_fileSystem.cpp
 
-IocCtrlConfig::Config configData = {3600.0, // initWakeUpTickPeriod
+IocM2mConfig::Config configData = {3600.0, // initWakeUpTickPeriod
                                     2, // initWakeUpCount
                                     60.0, // normalWakeUpTickPeriod
                                     60, // normalWakeUpCount
                                     600.0, // batteryWakeUpTickPeriod
                                     true}; // gnssEnable
 
-IocCtrlAudio::Audio audioData = {false, // streamingEnabled
+IocM2mAudio::Audio audioData = {false, // streamingEnabled
                                  -1.0, // duration
                                  -1.0, // fixedGain
                                  1, // audioCommunicationsMode
                                  "ciot.it-sgn.u-blox.com:8080"}; //audioServerUrl
 
-IocCtrlDiagnostics::Diagnostics diagnosticsData = {-1};
+IocM2mDiagnostics::Diagnostics diagnosticsData = {-1};
 
 // LEDs
 static DigitalOut ledRed(LED1, 1);
@@ -120,7 +120,7 @@ static void setThing(bool value)
     printf("Thing set to %d.\n", value);
 }
 
-static bool getLocationData(IocCtrlLocation::Location *data)
+static bool getLocationData(IocM2mLocation::Location *data)
 {
     data->latitudeDegrees = 1.00;
     data->longitudeDegrees = 2.00;
@@ -132,7 +132,7 @@ static bool getLocationData(IocCtrlLocation::Location *data)
     return true;
 }
 
-static bool getTemperatureData(IocCtrlTemperature::Temperature *data)
+static bool getTemperatureData(IocM2mTemperature::Temperature *data)
 {
     data->temperature = 32;
     data->minTemperature = 5;
@@ -146,7 +146,7 @@ static void resetMinMax()
     printf("Received min/max temperature reset.\n");
 }
 
-static void setConfigData(IocCtrlConfig::Config *data)
+static void setConfigData(IocM2mConfig::Config *data)
 {
     printf("Received new config settings:\n");
     printf("  initWakeUpTickPeriod %f.\n", data->initWakeUpTickPeriod);
@@ -159,7 +159,7 @@ static void setConfigData(IocCtrlConfig::Config *data)
     configData = *data;
 }
 
-static void setAudioData(IocCtrlAudio::Audio *data)
+static void setAudioData(IocM2mAudio::Audio *data)
 {
     printf("Received new audio parameters:\n");
     printf("  streamingEnabled %d.\n", data->streamingEnabled);
@@ -171,7 +171,7 @@ static void setAudioData(IocCtrlAudio::Audio *data)
     audioData = *data;
 }
 
-static bool getDiagnosticsData(IocCtrlDiagnostics::Diagnostics *data)
+static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 {
     data->upTime = 100;
     data->worstCaseSendDuration = 0.999;
@@ -298,17 +298,17 @@ int main() {
     // TODO add resources to device object
 
     printf("Creating all the other objects...\n");
-    IocCtrlPowerControl *powerControlObject = new IocCtrlPowerControl(DEBUG_ON, setThing, true);
+    IocM2mPowerControl *powerControlObject = new IocM2mPowerControl(setThing, true, DEBUG_ON);
     cloudClientDm->addObject(powerControlObject->getObject());
-    IocCtrlLocation *locationObject = new IocCtrlLocation(DEBUG_ON, getLocationData);
+    IocM2mLocation *locationObject = new IocM2mLocation(getLocationData, DEBUG_ON);
     cloudClientDm->addObject(locationObject->getObject());
-    IocCtrlTemperature *temperatureObject = new IocCtrlTemperature(DEBUG_ON, getTemperatureData, resetMinMax, -10, +120, "cel");
+    IocM2mTemperature *temperatureObject = new IocM2mTemperature(getTemperatureData, resetMinMax, -10, +120, "cel", DEBUG_ON);
     cloudClientDm->addObject(temperatureObject->getObject());
-    IocCtrlConfig *configObject = new IocCtrlConfig(DEBUG_ON, setConfigData, &configData);
+    IocM2mConfig *configObject = new IocM2mConfig(setConfigData, &configData, DEBUG_ON);
     cloudClientDm->addObject(configObject->getObject());
-    IocCtrlAudio *audioObject = new IocCtrlAudio(DEBUG_ON, setAudioData, &audioData);
+    IocM2mAudio *audioObject = new IocM2mAudio(setAudioData, &audioData, DEBUG_ON);
     cloudClientDm->addObject(audioObject->getObject());
-    IocCtrlDiagnostics *diagnosticsObject = new IocCtrlDiagnostics(DEBUG_ON, getDiagnosticsData);
+    IocM2mDiagnostics *diagnosticsObject = new IocM2mDiagnostics(getDiagnosticsData, DEBUG_ON);
     cloudClientDm->addObject(diagnosticsObject->getObject());
 
     printf("Starting cloud client...\n");

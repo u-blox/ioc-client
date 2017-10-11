@@ -17,7 +17,7 @@
 #include "mbed.h"
 #include "MbedCloudClient.h"
 #include "m2m_object_helper.h"
-#include "ioc_control.h"
+#include "ioc_m2m.h"
 
 #define printfLog(format, ...) debug_if(_debugOn, format, ## __VA_ARGS__)
 
@@ -28,17 +28,19 @@
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlPowerControl::_defObject =
+const M2MObjectHelper::DefObject IocM2mPowerControl::_defObject =
     {0, "3312", 1,
         -1, RESOURCE_NUMBER_POWER_SWITCH, "on/off", M2MResourceBase::BOOLEAN, false, M2MBase::GET_PUT_ALLOWED, NULL
     };
 
 // Constructor.
-IocCtrlPowerControl::IocCtrlPowerControl(bool debugOn,
-                                         Callback<void(bool)> setCallback,
-                                         bool initialValue)
-                    :M2MObjectHelper(debugOn, &_defObject,
-                                     value_updated_callback(this, &IocCtrlPowerControl::objectUpdated))
+IocM2mPowerControl::IocM2mPowerControl(Callback<void(bool)> setCallback,
+                                        bool initialValue,
+                                        bool debugOn)
+                   :M2MObjectHelper(&_defObject,
+                                    value_updated_callback(this, &IocM2mPowerControl::objectUpdated),
+                                    NULL,
+                                    debugOn)
 {
     _setCallback = setCallback;
 
@@ -48,24 +50,24 @@ IocCtrlPowerControl::IocCtrlPowerControl(bool debugOn,
     // Set the initial value
     MBED_ASSERT(setResourceValue(initialValue, RESOURCE_NUMBER_POWER_SWITCH));
 
-    printfLog("IocCtrlPowerControl: object initialised.\n");
+    printfLog("IocM2mPowerControl: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlPowerControl::~IocCtrlPowerControl()
+IocM2mPowerControl::~IocM2mPowerControl()
 {
 }
 
 // Callback when the object is updated.
-void IocCtrlPowerControl::objectUpdated(const char *resourceName)
+void IocM2mPowerControl::objectUpdated(const char *resourceName)
 {
     bool onNotOff;
 
-    printfLog("IocCtrlPowerControl: resource \"%s\" has been updated.\n", resourceName);
+    printfLog("IocM2mPowerControl: resource \"%s\" has been updated.\n", resourceName);
 
     MBED_ASSERT(getResourceValue(&onNotOff, RESOURCE_NUMBER_POWER_SWITCH));
 
-    printfLog("IocCtrlPowerControl: new value is %d.\n", onNotOff);
+    printfLog("IocM2mPowerControl: new value is %d.\n", onNotOff);
 
     if (_setCallback) {
         _setCallback(onNotOff);
@@ -79,7 +81,7 @@ void IocCtrlPowerControl::objectUpdated(const char *resourceName)
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlLocation::_defObject =
+const M2MObjectHelper::DefObject IocM2mLocation::_defObject =
     {0, "6", 6,
         -1, RESOURCE_NUMBER_LATITUDE, "latitude", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, FORMAT_DEGREES,
         -1, RESOURCE_NUMBER_LONGITUDE, "longitude", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, FORMAT_DEGREES,
@@ -90,9 +92,9 @@ const M2MObjectHelper::DefObject IocCtrlLocation::_defObject =
     };
 
 // Constructor.
-IocCtrlLocation::IocCtrlLocation(bool debugOn,
-                                 Callback<bool(Location *)> getCallback)
-                :M2MObjectHelper(debugOn, &_defObject)
+IocM2mLocation::IocM2mLocation(Callback<bool(Location *)> getCallback,
+                               bool debugOn)
+               :M2MObjectHelper(&_defObject, NULL, NULL, debugOn)
 {
     _getCallback = getCallback;
 
@@ -102,16 +104,16 @@ IocCtrlLocation::IocCtrlLocation(bool debugOn,
     // Update the values held in the resources
     updateObservableResources();
 
-    printfLog("IocCtrlLocation: object initialised.\n");
+    printfLog("IocM2mLocation: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlLocation::~IocCtrlLocation()
+IocM2mLocation::~IocM2mLocation()
 {
 }
 
 // Update the observable data for this object.
-void IocCtrlLocation::updateObservableResources()
+void IocM2mLocation::updateObservableResources()
 {
     Location data;
 
@@ -136,7 +138,7 @@ void IocCtrlLocation::updateObservableResources()
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlTemperature::_defObject =
+const M2MObjectHelper::DefObject IocM2mTemperature::_defObject =
     {0, "3303", 7,
         -1, RESOURCE_NUMBER_TEMPERATURE, "temperature", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_MIN_TEMPERATURE, "temperature", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, NULL,
@@ -148,13 +150,13 @@ const M2MObjectHelper::DefObject IocCtrlTemperature::_defObject =
     };
 
 // Constructor.
-IocCtrlTemperature::IocCtrlTemperature(bool debugOn,
-                                       Callback<bool(Temperature *)> getCallback,
-                                       Callback<void(void)> resetMinMaxCallback,
-                                       float minRange,
-                                       float maxRange,
-                                       String units)
-                   :M2MObjectHelper(debugOn, &_defObject)
+IocM2mTemperature::IocM2mTemperature(Callback<bool(Temperature *)> getCallback,
+                                     Callback<void(void)> resetMinMaxCallback,
+                                     float minRange,
+                                     float maxRange,
+                                     String units,
+                                     bool debugOn)
+                  :M2MObjectHelper(&_defObject, NULL, NULL, debugOn)
 {
     _getCallback = getCallback;
     _resetMinMaxCallback = resetMinMaxCallback;
@@ -169,22 +171,22 @@ IocCtrlTemperature::IocCtrlTemperature(bool debugOn,
 
     // Set the execute function
     if (resetMinMaxCallback) {
-        MBED_ASSERT(setExecuteCallback(execute_callback(this, &IocCtrlTemperature::executeFunction), RESOURCE_NUMBER_RESET_MIN_MAX));
+        MBED_ASSERT(setExecuteCallback(execute_callback(this, &IocM2mTemperature::executeFunction), RESOURCE_NUMBER_RESET_MIN_MAX));
     }
 
     // Update the observable resources
     updateObservableResources();
 
-    printfLog("IocCtrlTemperature: object initialised.\n");
+    printfLog("IocM2mTemperature: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlTemperature::~IocCtrlTemperature()
+IocM2mTemperature::~IocM2mTemperature()
 {
 }
 
 // Update the observable data for this object.
-void IocCtrlTemperature::updateObservableResources()
+void IocM2mTemperature::updateObservableResources()
 {
     Temperature data;
 
@@ -201,9 +203,9 @@ void IocCtrlTemperature::updateObservableResources()
 
 /** Executable function.
  */
-void IocCtrlTemperature::executeFunction (void *parameter)
+void IocM2mTemperature::executeFunction (void *parameter)
 {
-    printfLog("IocCtrlTemperature: reset min/max received.\n");
+    printfLog("IocM2mTemperature: reset min/max received.\n");
 
     if (_resetMinMaxCallback) {
         _resetMinMaxCallback();
@@ -217,7 +219,7 @@ void IocCtrlTemperature::executeFunction (void *parameter)
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlConfig::_defObject =
+const M2MObjectHelper::DefObject IocM2mConfig::_defObject =
     {0, "32769", 6,
         RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
         RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_COUNT, "counter", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
@@ -228,11 +230,13 @@ const M2MObjectHelper::DefObject IocCtrlConfig::_defObject =
     };
 
 // Constructor.
-IocCtrlConfig::IocCtrlConfig(bool debugOn,
-                             Callback<void(Config *)> setCallback,
-                             Config *initialValues)
-              :M2MObjectHelper(debugOn, &_defObject,
-                               value_updated_callback(this, &IocCtrlConfig::objectUpdated))
+IocM2mConfig::IocM2mConfig(Callback<void(Config *)> setCallback,
+                           Config *initialValues,
+                           bool debugOn)
+             :M2MObjectHelper(&_defObject,
+                              value_updated_callback(this, &IocM2mConfig::objectUpdated),
+                              NULL,
+                              debugOn)
 {
     _setCallback = setCallback;
 
@@ -252,20 +256,20 @@ IocCtrlConfig::IocCtrlConfig(bool debugOn,
                                  RESOURCE_NUMBER_BATTERY_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_BATTERY_WAKE_UP));
     MBED_ASSERT(setResourceValue(initialValues->gnssEnable, RESOURCE_NUMBER_GNSS_ENABLE));
 
-    printfLog("IocCtrlConfig: object initialised.\n");
+    printfLog("IocM2mConfig: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlConfig::~IocCtrlConfig()
+IocM2mConfig::~IocM2mConfig()
 {
 }
 
 // Callback when the object is updated by the server.
-void IocCtrlConfig::objectUpdated(const char *resourceName)
+void IocM2mConfig::objectUpdated(const char *resourceName)
 {
     Config config;
 
-    printfLog("IocCtrlConfig: resource \"%s\" has been updated.\n", resourceName);
+    printfLog("IocM2mConfig: resource \"%s\" has been updated.\n", resourceName);
 
     MBED_ASSERT(getResourceValue(&config.initWakeUpTickPeriod,
                                  RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_INIT_WAKE_UP));
@@ -280,7 +284,7 @@ void IocCtrlConfig::objectUpdated(const char *resourceName)
     MBED_ASSERT(getResourceValue(&config.gnssEnable,
                                  RESOURCE_NUMBER_GNSS_ENABLE));
 
-    printfLog("IocCtrlConfig: new config is:\n");
+    printfLog("IocM2mConfig: new config is:\n");
     printfLog("  initWakeUpTickPeriod %f.\n", config.initWakeUpTickPeriod);
     printfLog("  initWakeUpCount %d.\n", config.initWakeUpCount);
     printfLog("  normalWakeUpTickPeriod %f.\n", config.normalWakeUpTickPeriod);
@@ -300,7 +304,7 @@ void IocCtrlConfig::objectUpdated(const char *resourceName)
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlAudio::_defObject =
+const M2MObjectHelper::DefObject IocM2mAudio::_defObject =
     {0, "32770", 5,
         -1, RESOURCE_NUMBER_STREAMING_ENABLED, "boolean", M2MResourceBase::BOOLEAN, false, M2MBase::GET_PUT_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_DURATION, "duration", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
@@ -310,11 +314,13 @@ const M2MObjectHelper::DefObject IocCtrlAudio::_defObject =
     };
 
 // Constructor.
-IocCtrlAudio::IocCtrlAudio(bool debugOn,
-                           Callback<void(Audio *)> setCallback,
-                           Audio *initialValues)
-             :M2MObjectHelper(debugOn, &_defObject,
-                              value_updated_callback(this, &IocCtrlAudio::objectUpdated))
+IocM2mAudio::IocM2mAudio(Callback<void(Audio *)> setCallback,
+                         Audio *initialValues,
+                         bool debugOn)
+            :M2MObjectHelper(&_defObject,
+                             value_updated_callback(this, &IocM2mAudio::objectUpdated),
+                             NULL,
+                             debugOn)
 {
     _setCallback = setCallback;
 
@@ -328,20 +334,20 @@ IocCtrlAudio::IocCtrlAudio(bool debugOn,
     MBED_ASSERT(setResourceValue(initialValues->audioCommunicationsMode, RESOURCE_NUMBER_AUDIO_COMMUNICATIONS_MODE));
     MBED_ASSERT(setResourceValue(initialValues->audioServerUrl, RESOURCE_NUMBER_AUDIO_SERVER_URL));
 
-    printfLog("IocCtrlAudio: object initialised.\n");
+    printfLog("IocM2mAudio: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlAudio::~IocCtrlAudio()
+IocM2mAudio::~IocM2mAudio()
 {
 }
 
 // Callback when the object is updated by the server.
-void IocCtrlAudio::objectUpdated(const char *resourceName)
+void IocM2mAudio::objectUpdated(const char *resourceName)
 {
     Audio audio;
 
-    printfLog("IocCtrlAudio: resource \"%s\" has been updated.\n", resourceName);
+    printfLog("IocM2mAudio: resource \"%s\" has been updated.\n", resourceName);
 
     MBED_ASSERT(getResourceValue(&audio.streamingEnabled, RESOURCE_NUMBER_STREAMING_ENABLED));
     MBED_ASSERT(getResourceValue(&audio.duration, RESOURCE_NUMBER_DURATION));
@@ -349,7 +355,7 @@ void IocCtrlAudio::objectUpdated(const char *resourceName)
     MBED_ASSERT(getResourceValue(&audio.audioCommunicationsMode, RESOURCE_NUMBER_AUDIO_COMMUNICATIONS_MODE));
     MBED_ASSERT(getResourceValue(&audio.audioServerUrl, RESOURCE_NUMBER_AUDIO_SERVER_URL));
 
-    printfLog("IocCtrlAudio: new audio parameters are:\n");
+    printfLog("IocM2mAudio: new audio parameters are:\n");
     printfLog("  streamingEnabled %d.\n", audio.streamingEnabled);
     printfLog("  duration %f (-1 == no limit).\n", audio.duration);
     printfLog("  fixedGain %f (-1 == use automatic gain).\n", audio.fixedGain);
@@ -368,7 +374,7 @@ void IocCtrlAudio::objectUpdated(const char *resourceName)
 /** The definition of the object (C++ pre C11 won't let this const
  * initialisation be done in the class definition).
  */
-const M2MObjectHelper::DefObject IocCtrlDiagnostics::_defObject =
+const M2MObjectHelper::DefObject IocM2mDiagnostics::_defObject =
     {0, "32771", 6,
         -1, RESOURCE_NUMBER_UP_TIME, "on time", M2MResourceBase::INTEGER, true, M2MBase::GET_ALLOWED, NULL,
         RESOURCE_INSTANCE_WORST_CASE_SEND_DURATION, RESOURCE_NUMBER_WORST_CASE_SEND_DURATION, "duration", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, NULL,
@@ -379,9 +385,9 @@ const M2MObjectHelper::DefObject IocCtrlDiagnostics::_defObject =
     };
 
 // Constructor.
-IocCtrlDiagnostics::IocCtrlDiagnostics(bool debugOn,
-                                       Callback<bool(Diagnostics *)> getCallback)
-                   :M2MObjectHelper(debugOn, &_defObject)
+IocM2mDiagnostics::IocM2mDiagnostics(Callback<bool(Diagnostics *)> getCallback,
+                                     bool debugOn)
+                  :M2MObjectHelper(&_defObject, NULL, NULL, debugOn)
 {
     _getCallback = getCallback;
 
@@ -391,16 +397,16 @@ IocCtrlDiagnostics::IocCtrlDiagnostics(bool debugOn,
     // Update the values held in the resources
     updateObservableResources();
 
-    printfLog("IocCtrlDiagnostics: object initialised.\n");
+    printfLog("IocM2mDiagnostics: object initialised.\n");
 }
 
 // Destructor.
-IocCtrlDiagnostics::~IocCtrlDiagnostics()
+IocM2mDiagnostics::~IocM2mDiagnostics()
 {
 }
 
 // Update the observable data for this object.
-void IocCtrlDiagnostics::updateObservableResources()
+void IocM2mDiagnostics::updateObservableResources()
 {
     Diagnostics data;
 
