@@ -28,27 +28,36 @@
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
 
-// Get debug prints from most things
-#define DEBUG_ON true
+#ifndef MBED_CONF_APP_OBJECT_DEBUG_ON
+// Get debug prints from LWM2M object stuff.
+#  define MBED_CONF_APP_OBJECT_DEBUG_ON true
+#endif
 
-// The baud rate to use with the modem
+#ifndef MBED_CONF_APP_MODEM_DEBUG_ON
+// Modem debug prints.
+#  define MBED_CONF_APP_MODEM_DEBUG_ON false
+#endif
+
+// The baud rate to use with the modem.
 #define MODEM_BAUD_RATE 230400
 
-// Whether to reset Mbed Cloud Client storage or not
+#ifndef MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE
+// Whether to reset Mbed Cloud Client storage or not.
 // If this is true then you really need to have
 // MBED_CONF_APP_DEVELOPER_MODE defined and then a
 // new object ID will be created when the Mbed Cloud
-// Client registers with the server
-#define CLOUD_CLIENT_RESET_STORAGE false
+// Client registers with the server.
+#  define MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE false
+#endif
 
-// The default audio data
+// The default audio data.
 #define AUDIO_DEFAULT_STREAMING_ENABLED  false
 #define AUDIO_DEFAULT_DURATION           -1.0
 #define AUDIO_DEFAULT_FIXED_GAIN         -1.0
 #define AUDIO_DEFAULT_COMMUNICATION_MODE 1
 #define AUDIO_DEFAULT_SERVER_URL         "ciot.it-sgn.u-blox.com:8080"
 
-// The default config data
+// The default config data.
 #define CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD    3600.0
 #define CONFIG_DEFAULT_INIT_WAKEUP_COUNT          2
 #define CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD  60.0
@@ -56,7 +65,7 @@
 #define CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD 600.0
 #define CONFIG_DEFAULT_GNSS_ENABLE                true
 
-// The static temperature object parameters
+// The static temperature object parameters.
 #define TEMPERATURE_MIN_RANGE -10
 #define TEMPERATURE_MAX_RANGE 120
 #define TEMPERATURE_UNITS "cel"
@@ -65,7 +74,42 @@
  * TYPES
  * -------------------------------------------------------------- */
 
-// Implementation of MbedCloudClientCallback
+// Identifier for each LWM2M object.
+//
+// To add a new object:
+// - add an entry for it here,
+// - add it to IocM2mObjectPointerUnion,
+// - add it to addObject() and deleteObject().
+//
+// Note: this enum is used to index into the gObjectList.
+typedef enum {
+    IOC_M2M_POWER_CONTROL,
+    IOC_M2M_LOCATION,
+    IOC_M2M_TEMPERATURE,
+    IOC_M2M_CONFIG,
+    IOC_M2M_AUDIO,
+    IOC_M2M_DIAGNOSTICS,
+    MAX_NUM_IOC_M2M_OBJECTS
+} IocM2mObjectId;
+
+// Union of pointers to all the LWM2M objects.
+typedef union {
+    IocM2mPowerControl *pPowerControl;
+    IocM2mLocation *pLocation;
+    IocM2mTemperature *pTemperature;
+    IocM2mConfig *pConfig;
+    IocM2mAudio *pAudio;
+    IocM2mDiagnostics *pDiagnostics;
+} IocM2mObjectPointerUnion;
+
+// Structure defining the things we need
+// to access in an LWM2M object
+typedef struct {
+    IocM2mObjectPointerUnion object;
+    Callback<void(void)> updateObservableResources;
+} IocM2mObject;
+
+// Implementation of MbedCloudClientCallback.
 class UpdateCallback : public MbedCloudClientCallback {
 public:
     UpdateCallback() {
@@ -86,28 +130,33 @@ public:
  * VARIABLES
  * -------------------------------------------------------------- */
 
-// Datagram storage for URTP
+// Datagram storage for URTP.
 __attribute__ ((section ("CCMRAM")))
 static char datagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
 // The SD card, instantiated in the Mbed Cloud Client in
-// in pal_plat_fileSystem.cpp
+// in pal_plat_fileSystem.cpp.
 extern SDBlockDevice sd;
 
-// The network interface
+// The event loop, queue and ticker.
+Thread gEventThread;
+EventQueue gEventQueue (32 * EVENTS_EVENT_SIZE);
+
+// The network interface.
 static UbloxPPPCellularInterface *gpCellular = NULL;
 
-// LWM2M objects for the control plane
+// The Mbed Cloud Client stuff.
 static CloudClientDm *gpCloudClientDm = NULL;
-static IocM2mPowerControl *gpPowerControlObject = NULL;
-static IocM2mLocation *gpLocationObject = NULL;
-static IocM2mTemperature *gpTemperatureObject = NULL;
-static IocM2mConfig *gpConfigObject = NULL;
-static IocM2mAudio *gpAudioObject = NULL;
-static IocM2mDiagnostics *gpDiagnosticsObject = NULL;
 static UpdateCallback *gpCloudClientGlobalUpdateCallback = NULL;
 
-// Data storage
+// LWM2M objects for the control plane.
+// NOTE: this array is accessed using the IocM2mObjectId enum.
+static IocM2mObject gObjectList[MAX_NUM_IOC_M2M_OBJECTS] = {NULL};
+
+// Event ID for the LWM2M object update event.
+static int gObjectUpdateEvent = -1;
+
+// Data storage.
 static bool powerOnNotOff = false;
 static IocM2mLocation::Location locationData;
 static IocM2mTemperature::Temperature temperatureData;
@@ -115,10 +164,10 @@ static IocM2mConfig::Config configData;
 static IocM2mAudio::Audio audioData;
 static IocM2mDiagnostics::Diagnostics diagnosticsData;
 
-// The user button
+// The user button.
 static InterruptIn *gpUserButton = NULL;
 
-// LEDs for user feedback and diagnostics
+// LEDs for user feedback and diagnostics.
 static DigitalOut ledRed(LED1, 1);
 static DigitalOut ledGreen(LED2, 1);
 static DigitalOut ledBlue(LED3, 1);
@@ -170,6 +219,96 @@ static void heapStats()
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: LWM2M
  * -------------------------------------------------------------- */
+
+// Add a LWM2M object to the relevant lists
+static void addObject(IocM2mObjectId id, void * object)
+{
+    MBED_ASSERT (gpCloudClientDm);
+
+    switch (id) {
+        case IOC_M2M_POWER_CONTROL:
+            gObjectList[id].object.pPowerControl = (IocM2mPowerControl *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pPowerControl->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pPowerControl,
+                                                                             &IocM2mPowerControl::updateObservableResources);
+            break;
+        case IOC_M2M_LOCATION:
+            gObjectList[id].object.pLocation = (IocM2mLocation *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pLocation->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pLocation,
+                                                                             &IocM2mLocation::updateObservableResources);
+            break;
+        case IOC_M2M_TEMPERATURE:
+            gObjectList[id].object.pTemperature = (IocM2mTemperature *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pTemperature->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pTemperature,
+                                                                             &IocM2mTemperature::updateObservableResources);
+            break;
+        case IOC_M2M_CONFIG:
+            gObjectList[id].object.pConfig = (IocM2mConfig *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pConfig->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pConfig,
+                                                                             &IocM2mConfig::updateObservableResources);
+            break;
+        case IOC_M2M_AUDIO:
+            gObjectList[id].object.pAudio = (IocM2mAudio *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pAudio->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pAudio,
+                                                                             &IocM2mAudio::updateObservableResources);
+            break;
+        case IOC_M2M_DIAGNOSTICS:
+            gObjectList[id].object.pDiagnostics = (IocM2mDiagnostics *) object;
+            gpCloudClientDm->addObject(gObjectList[id].object.pDiagnostics->getObject());
+            gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pDiagnostics,
+                                                                             &IocM2mDiagnostics::updateObservableResources);
+            break;
+        default:
+            printf("Unknown object ID (%d).\n", id);
+            break;
+    }
+}
+
+// Delete an object.
+// Note: this does not remove the object from the Mbed Cloud Client,
+// the Mbed Cloud Client clears itself up at the end.
+void deleteObject(IocM2mObjectId id)
+{
+    if ((void *) &(gObjectList[id].object) != NULL) {
+        switch (id) {
+            case IOC_M2M_POWER_CONTROL:
+                delete gObjectList[id].object.pPowerControl;
+                gObjectList[id].object.pPowerControl = NULL;
+                break;
+            case IOC_M2M_LOCATION:
+                delete gObjectList[id].object.pLocation;
+                gObjectList[id].object.pLocation = NULL;
+                break;
+            case IOC_M2M_TEMPERATURE:
+                delete gObjectList[id].object.pTemperature;
+                gObjectList[id].object.pTemperature = NULL;
+                break;
+            case IOC_M2M_CONFIG:
+                delete gObjectList[id].object.pConfig;
+                gObjectList[id].object.pConfig = NULL;
+                break;
+            case IOC_M2M_AUDIO:
+                delete gObjectList[id].object.pAudio;
+                gObjectList[id].object.pAudio = NULL;
+                break;
+            case IOC_M2M_DIAGNOSTICS:
+                delete gObjectList[id].object.pDiagnostics;
+                gObjectList[id].object.pDiagnostics = NULL;
+                break;
+            default:
+                printf("Unknown object ID (%d).\n", id);
+                break;
+        }
+
+        if ((void *) &(gObjectList[id].object) == NULL) {
+            gObjectList[id].updateObservableResources = NULL;
+        }
+    }
+}
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
 static void cloudClientRegisteredCallback() {
@@ -256,6 +395,17 @@ static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
     return true;
 }
 
+// Callback to update the observable values of all the LWM2M objects
+static void objectUpdate()
+{
+    for (unsigned int x = 0; x < sizeof (gObjectList) /
+                                 sizeof (gObjectList[0]); x++) {
+        if (gObjectList[x].updateObservableResources) {
+            gObjectList[x].updateObservableResources();
+        }
+    }
+}
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: MISC
  * -------------------------------------------------------------- */
@@ -275,6 +425,8 @@ static void buttonCallback()
 // Note: here be multiple return statements.
 static bool init(bool resetStorage)
 {
+    int x = 0;
+
     printf("Setting up data storage...\n");
     memset(&locationData, 0, sizeof (locationData));
     memset(&temperatureData, 0, sizeof (temperatureData));
@@ -299,10 +451,10 @@ static bool init(bool resetStorage)
     gpUserButton->rise(&buttonCallback);
 
     printf("Starting SD card...\n");
-    int sdError = sd.init();
-    if (sdError != 0) {
+    x = sd.init();
+    if (x != 0) {
         bad();
-        printf("Error initialising SD card (%d).\n", sdError);
+        printf("Error initialising SD card (%d).\n", x);
         return false;
     }
     printf("SD card started.\n");
@@ -357,7 +509,8 @@ static bool init(bool resetStorage)
     srand(time(NULL));
 
     printf("Initialising cellular...\n");
-    gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE, false);
+    gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
+                                               MBED_CONF_APP_MODEM_DEBUG_ON);
     if (!gpCellular->init()) {
         bad();
         printf("Unable to initialise cellular.\n");
@@ -372,30 +525,29 @@ static bool init(bool resetStorage)
     }
 
     printf("Initialising Mbed Cloud Client...\n");
-    gpCloudClientDm = new CloudClientDm(DEBUG_ON,
+    gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
                                         &cloudClientRegisteredCallback,
                                         &cloudClientDeregisteredCallback);
     printf("Configuring LWM2M Device object...\n");
-    // TODO add resources to device object
+    // TODO add resources to the Device object
 
     printf("Creating all the other LWM2M objects...\n");
-    gpPowerControlObject = new IocM2mPowerControl(setPowerControl, true, DEBUG_ON);
-    gpCloudClientDm->addObject(gpPowerControlObject->getObject());
-    gpLocationObject = new IocM2mLocation(getLocationData, DEBUG_ON);
-    gpCloudClientDm->addObject(gpLocationObject->getObject());
-    gpTemperatureObject = new IocM2mTemperature(getTemperatureData,
-                                                executeResetTemperatureMinMax,
-                                                TEMPERATURE_MIN_RANGE,
-                                                TEMPERATURE_MAX_RANGE,
-                                                TEMPERATURE_UNITS,
-                                                DEBUG_ON);
-    gpCloudClientDm->addObject(gpTemperatureObject->getObject());
-    gpConfigObject = new IocM2mConfig(setConfigData, &configData, DEBUG_ON);
-    gpCloudClientDm->addObject(gpConfigObject->getObject());
-    gpAudioObject = new IocM2mAudio(setAudioData, &audioData, DEBUG_ON);
-    gpCloudClientDm->addObject(gpAudioObject->getObject());
-    gpDiagnosticsObject = new IocM2mDiagnostics(getDiagnosticsData, DEBUG_ON);
-    gpCloudClientDm->addObject(gpDiagnosticsObject->getObject());
+    addObject(IOC_M2M_POWER_CONTROL, new IocM2mPowerControl(setPowerControl, true,
+                                                            MBED_CONF_APP_OBJECT_DEBUG_ON));
+    addObject(IOC_M2M_LOCATION, new IocM2mLocation(getLocationData,
+                                                   MBED_CONF_APP_OBJECT_DEBUG_ON));
+    addObject(IOC_M2M_TEMPERATURE, new IocM2mTemperature(getTemperatureData,
+                                                         executeResetTemperatureMinMax,
+                                                         TEMPERATURE_MIN_RANGE,
+                                                         TEMPERATURE_MAX_RANGE,
+                                                         TEMPERATURE_UNITS,
+                                                         MBED_CONF_APP_OBJECT_DEBUG_ON));
+    addObject(IOC_M2M_CONFIG, new IocM2mConfig(setConfigData, &configData,
+                                               MBED_CONF_APP_OBJECT_DEBUG_ON));
+    addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData, &audioData,
+                                             MBED_CONF_APP_OBJECT_DEBUG_ON));
+    addObject(IOC_M2M_DIAGNOSTICS, new IocM2mDiagnostics(getDiagnosticsData,
+                                                         MBED_CONF_APP_OBJECT_DEBUG_ON));
 
     printf("Starting Mbed Cloud Client...\n");
     gpCloudClientGlobalUpdateCallback = new UpdateCallback();
@@ -427,29 +579,8 @@ static void deinit()
         gpCloudClientDm->stop();
     }
     printf("Deleting LWM2M objects...\n");
-    if (gpPowerControlObject != NULL) {
-        delete gpPowerControlObject;
-        gpPowerControlObject = NULL;
-    }
-    if (gpLocationObject != NULL) {
-        delete gpLocationObject;
-        gpLocationObject = NULL;
-    }
-    if (gpTemperatureObject != NULL) {
-        delete gpTemperatureObject;
-        gpTemperatureObject = NULL;
-    }
-    if (gpConfigObject != NULL) {
-        delete gpConfigObject;
-        gpConfigObject = NULL;
-    }
-    if (gpAudioObject != NULL) {
-        delete gpAudioObject;
-        gpAudioObject = NULL;
-    }
-    if (gpDiagnosticsObject != NULL) {
-        delete gpDiagnosticsObject;
-        gpDiagnosticsObject = NULL;
+    for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof (gObjectList[0]); x++) {
+        deleteObject((IocM2mObjectId) x);
     }
 
     if (gpCloudClientDm != NULL) {
@@ -484,18 +615,24 @@ static void deinit()
  * -------------------------------------------------------------- */
 
 int main() {
-
     printf("\nMaking sure the compiler links datagramStorage (0x%08x).\n", (int) datagramStorage);
 
     good();
     heapStats();
 
-    if (init(CLOUD_CLIENT_RESET_STORAGE)) {
+    // Initialise everything
+    if (init(MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE)) {
+
+        printf("Starting event queue in context %p...\n", Thread::gettid());
+        gEventThread.start(callback(&gEventQueue, &EventQueue::dispatch_forever));
+        gObjectUpdateEvent = gEventQueue.call_every(CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD * 1000, objectUpdate);
 
         for (int x = 0; !gUserButtonPressed; x++) {
             wait_ms(1000);
             toggleGreen();
         }
+
+        // Shut everything down
         deinit();
     }
 
