@@ -230,7 +230,7 @@ const M2MObjectHelper::DefObject IocM2mConfig::_defObject =
     };
 
 // Constructor.
-IocM2mConfig::IocM2mConfig(Callback<void(Config *)> setCallback,
+IocM2mConfig::IocM2mConfig(Callback<void(const Config *)> setCallback,
                            Config *initialValues,
                            bool debugOn)
              :M2MObjectHelper(&_defObject,
@@ -314,7 +314,7 @@ const M2MObjectHelper::DefObject IocM2mAudio::_defObject =
     };
 
 // Constructor.
-IocM2mAudio::IocM2mAudio(Callback<void(Audio *)> setCallback,
+IocM2mAudio::IocM2mAudio(Callback<void(const Audio *)> setCallback,
                          Audio *initialValues,
                          bool debugOn)
             :M2MObjectHelper(&_defObject,

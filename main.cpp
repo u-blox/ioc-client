@@ -86,17 +86,17 @@
 
 // The default audio setup data.
 #define AUDIO_DEFAULT_STREAMING_ENABLED  false
-#define AUDIO_DEFAULT_DURATION           -1.0
-#define AUDIO_DEFAULT_FIXED_GAIN         -1.0
+#define AUDIO_DEFAULT_DURATION           -1
+#define AUDIO_DEFAULT_FIXED_GAIN         -1
 #define AUDIO_DEFAULT_COMMUNICATION_MODE COMMS_TCP
-#define AUDIO_DEFAULT_SERVER_URL         "ciot.it-sgn.u-blox.com:8080"
+#define AUDIO_DEFAULT_SERVER_URL         "ciot.it-sgn.u-blox.com:5065"
 
 // The default config data.
-#define CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD    3600.0
+#define CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD    3600
 #define CONFIG_DEFAULT_INIT_WAKEUP_COUNT          2
-#define CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD  60.0
+#define CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD  60
 #define CONFIG_DEFAULT_NORMAL_WAKEUP_COUNT        60
-#define CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD 600.0
+#define CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD 600
 #define CONFIG_DEFAULT_GNSS_ENABLE                true
 
 // The static temperature object values.
@@ -114,9 +114,11 @@
 // The identifiers for each LWM2M object.
 //
 // To add a new object:
+// - create the object (over in ioc-m2m.h/.cpp),
 // - add an entry for it here,
 // - add it to IocM2mObjectPointerUnion,
-// - add it to addObject() and deleteObject().
+// - add it to addObject() and deleteObject(),
+// - instantiate it in init().
 //
 // Note: this enum is used to index into gObjectList.
 typedef enum {
@@ -140,12 +142,39 @@ typedef union {
     void* raw;
 } IocM2mObjectPointerUnion;
 
-// Structure defining the things we need
-// to access in an LWM2M object
+// Structure defining the things we need to
+// access in an LWM2M object.
 typedef struct {
     IocM2mObjectPointerUnion object;
     Callback<void(void)> updateObservableResources;
 } IocM2mObject;
+
+// Union of socket types.
+typedef union {
+    TCPSocket *pTcpSock;
+    UDPSocket *pUdpSock;
+} SocketPointerUnion;
+
+// Local version of audio parameters.
+typedef struct {
+    bool streamingEnabled;
+    int duration;  ///< -1 = no limit.
+    int fixedGain; ///< -1 = use automatic gain.
+    int socketMode; // Either COMMS_TCP or COMMS_UDP
+    String audioServerUrl;
+    SocketPointerUnion sock;
+    SocketAddress server;
+} AudioLocal;
+
+// The local version of diagnostics data.
+typedef struct {
+    unsigned int worstCaseAudioDatagramSendDuration;
+    uint64_t averageAudioDatagramSendDuration;
+    uint64_t numAudioDatagrams;
+    unsigned int numAudioSendFailures;
+    unsigned int numAudioDatagramsSendTookTooLong;
+    unsigned int numAudioBytesSent;
+} DiagnosticsLocal;
 
 // Implementation of MbedCloudClientCallback,
 // a catch-all should the callback get missed out on
@@ -154,10 +183,8 @@ class UpdateCallback : public MbedCloudClientCallback {
 public:
     UpdateCallback() {
     }
-
     virtual ~UpdateCallback() {
     }
-
     // Implementation of MbedCloudClientCallback
     virtual void value_updated(M2MBase *base, M2MBase::BaseType type) {
         printf("UNHANDLED  PUT request, name: \"%s\", path: \"%s\","
@@ -165,19 +192,6 @@ public:
                base->name(), base->uri_path(), type, base->resource_type());
     }
 };
-
-// Union of socket types.
-typedef union {
-    TCPSocket *pTcpSock;
-    UDPSocket *pUdpSock;
-} SocketPointerUnion;
-
-// A struct to hold the audio communications channel parameters.
-typedef struct {
-    int socketMode; // Either COMMS_TCP or COMMS_UDP
-    SocketPointerUnion sock;
-    SocketAddress server;
-} AudioCommsParams;
 
 /* ----------------------------------------------------------------
  * VARIABLES
@@ -204,11 +218,6 @@ static bool gPowerOnNotOff = false;
 static IocM2mLocation::Location gLocationData;
 static IocM2mTemperature::Temperature gTemperatureData;
 static IocM2mConfig::Config gConfigData;
-static IocM2mAudio::Audio gAudioData;
-// Note: don't need storage here for IocM2mDiagnostics
-// since the values needed include floats and we want
-// to keep things nice and simple, hence use integers,
-// see lower down in the variables section.
 
 // The event loop and event queue.
 static Thread gEventThread;
@@ -237,7 +246,8 @@ static char gDatagramStorage[URTP_DATAGRAM_STORE_SIZE];
 static Thread *gpSendTask = NULL;
 
 // Audio comms parameters.
-static AudioCommsParams gAudioCommsParams = {0};
+static AudioLocal gAudioLocalPending;
+static AudioLocal gAudioLocalActive;
 
 // Flag to indicate that the audio comms channel is up.
 static volatile bool gAudioCommsConnected = false;
@@ -255,12 +265,7 @@ static DigitalOut gLedGreen(LED2, 1);
 static DigitalOut gLedBlue(LED3, 1);
 
 // For diagnostics.
-static uint64_t gWorstCaseAudioDatagramSendDuration = 0;
-static uint64_t gAverageAudioDatagramSendDuration = 0;
-static uint64_t gNumAudioDatagrams = 0;
-static unsigned int gNumAudioSendFailures = 0;
-static unsigned int gNumAudioDatagramsSendTookTooLong = 0;
-static unsigned int gNumAudioBytesSent = 0;
+static DiagnosticsLocal gDiagnostics = {0};
 static Ticker gAudioSecondTicker;
 
 /* ----------------------------------------------------------------
@@ -352,9 +357,9 @@ static Urtp gUrtp(&datagramReadyCb, &datagramOverflowStartCb, &datagramOverflowS
 static void audioMonitor()
 {
     // Monitor throughput
-    if (gNumAudioBytesSent > 0) {
-        LOG(EVENT_THROUGHPUT_BITS_S, gNumAudioBytesSent << 3);
-        gNumAudioBytesSent = 0;
+    if (gDiagnostics.numAudioBytesSent > 0) {
+        LOG(EVENT_THROUGHPUT_BITS_S, gDiagnostics.numAudioBytesSent << 3);
+        gDiagnostics.numAudioBytesSent = 0;
         LOG(EVENT_NUM_DATAGRAMS_QUEUED, gUrtp.getUrtpDatagramsAvailable());
     }
 }
@@ -402,9 +407,9 @@ bool getPortFromUrl(const char * pUrl, int *port)
 }
 
 // Start the audio streaming connection.
-// This will set up the gAudioCommsParams structure.
+// This will set up the pAudio structure.
 // Note: here be multiple return statements.
-static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
+static bool startAudioStreamingConnection(AudioLocal *pAudio)
 {
     char *pBuf = new char[AUDIO_MAX_LEN_SERVER_URL];
     int port;
@@ -419,11 +424,11 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
     } else {
         getAddressFromUrl(pAudio->audioServerUrl.c_str(), pBuf, AUDIO_MAX_LEN_SERVER_URL);
         printf("Looking for server URL \"%s\"...\n", pBuf);
-        if (gpCellular->gethostbyname(pBuf, &gAudioCommsParams.server) == 0) {
-            printf("Found it at IP address %s.\n", gAudioCommsParams.server.get_ip_address());
+        if (gpCellular->gethostbyname(pBuf, &pAudio->server) == 0) {
+            printf("Found it at IP address %s.\n", pAudio->server.get_ip_address());
             if (getPortFromUrl(pAudio->audioServerUrl.c_str(), &port)) {
-                gAudioCommsParams.server.set_port(port);
-                printf("Audio server port set to %d.\n", gAudioCommsParams.server.get_port());
+                pAudio->server.set_port(port);
+                printf("Audio server port set to %d.\n", pAudio->server.get_port());
             } else {
                 printf("WARNING: no port number was specified in the audio server URL (\"%s\").\n",
                        pAudio->audioServerUrl.c_str());
@@ -436,18 +441,17 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
     }
 
     printf("Opening socket to server for audio comms...\n");
-    switch (pAudio->audioCommunicationsMode) {
+    switch (pAudio->socketMode) {
         case COMMS_TCP:
-            gAudioCommsParams.socketMode = COMMS_TCP;
-            gAudioCommsParams.sock.pTcpSock = new TCPSocket();
-            nsapiError = gAudioCommsParams.sock.pTcpSock->open(gpCellular);
+            pAudio->sock.pTcpSock = new TCPSocket();
+            nsapiError = pAudio->sock.pTcpSock->open(gpCellular);
             if (nsapiError != NSAPI_ERROR_OK) {
                 bad();
                 printf("Could not open TCP socket to audio streaming server (error %d).\n", nsapiError);
                 return false;
             } else {
                 printf("Connecting TCP...\n");
-                nsapiError = gAudioCommsParams.sock.pTcpSock->connect(gAudioCommsParams.server);
+                nsapiError = pAudio->sock.pTcpSock->connect(pAudio->server);
                 if (nsapiError != NSAPI_ERROR_OK) {
                     bad();
                     printf("Could not connect TCP socket (error %d).\n", nsapiError);
@@ -455,7 +459,7 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
                 } else {
                     printf("Setting TCP_NODELAY in TCP socket options...\n");
                     // Set TCP_NODELAY (1) in level IPPROTO_TCP (6) to 1
-                    nsapiError = gAudioCommsParams.sock.pTcpSock->setsockopt(6, 1, &setOption, sizeof(setOption));
+                    nsapiError = pAudio->sock.pTcpSock->setsockopt(6, 1, &setOption, sizeof(setOption));
                     if (nsapiError != NSAPI_ERROR_OK) {
                         bad();
                         printf("Could not set TCP socket options (error %d).\n", nsapiError);
@@ -465,9 +469,8 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
             }
             break;
         case COMMS_UDP:
-            gAudioCommsParams.socketMode = COMMS_UDP;
-            gAudioCommsParams.sock.pUdpSock = new UDPSocket();
-            nsapiError = gAudioCommsParams.sock.pUdpSock->open(gpCellular);
+            pAudio->sock.pUdpSock = new UDPSocket();
+            nsapiError = pAudio->sock.pUdpSock->open(gpCellular);
             if (nsapiError != NSAPI_ERROR_OK) {
                 bad();
                 printf("Could not open UDP socket to audio streaming server (error %d).\n", nsapiError);
@@ -476,7 +479,7 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
             break;
         default:
             bad();
-            printf("Unknown audio communications mode (%lld).\n", pAudio->audioCommunicationsMode);
+            printf("Unknown audio communications mode (%d).\n", pAudio->socketMode);
             return false;
             break;
     }
@@ -487,23 +490,25 @@ static bool startAudioStreamingConnection(IocM2mAudio::Audio *pAudio)
 }
 
 // Stop the audio streaming connection.
-static void stopAudioStreamingConnection()
+static void stopAudioStreamingConnection(AudioLocal *pAudio)
 {
     printf("Closing audio server socket...\n");
-    switch (gAudioCommsParams.socketMode) {
+    switch (pAudio->socketMode) {
         case COMMS_TCP:
-            gAudioCommsParams.sock.pTcpSock->close();
-            delete gAudioCommsParams.sock.pTcpSock;
-            gAudioCommsParams.sock.pTcpSock = NULL;
+            // No need to close() the socket,
+            // the destructor does that.
+            delete pAudio->sock.pTcpSock;
+            pAudio->sock.pTcpSock = NULL;
             break;
         case COMMS_UDP:
-            gAudioCommsParams.sock.pUdpSock->close();
-            delete gAudioCommsParams.sock.pUdpSock;
-            gAudioCommsParams.sock.pUdpSock = NULL;
+            // No need to close() the socket,
+            // the destructor does that.
+            delete pAudio->sock.pUdpSock;
+            pAudio->sock.pUdpSock = NULL;
             break;
         default:
             bad();
-            printf("Unknown audio communications mode (%d).\n", gAudioCommsParams.socketMode);
+            printf("Unknown audio communications mode (%d).\n", pAudio->socketMode);
             break;
     }
 
@@ -540,7 +545,7 @@ static int tcpSend(TCPSocket * pSock, const char * pData, int size)
 // The send function that forms the body of the send task.
 // This task runs whenever there is an audio datagram ready
 // to send.
-static void sendAudioData(const AudioCommsParams * pAudioCommsParams)
+static void sendAudioData(const AudioLocal * pAudioLocal)
 {
     const char * urtpDatagram = NULL;
     Timer sendDurationTimer;
@@ -560,18 +565,18 @@ static void sendAudioData(const AudioCommsParams * pAudioCommsParams)
             // Send the datagram
             if (gAudioCommsConnected) {
                 //LOG(EVENT_SEND_START, (int) urtpDatagram);
-                if (pAudioCommsParams->socketMode == COMMS_TCP) {
-                    retValue = tcpSend(pAudioCommsParams->sock.pTcpSock, urtpDatagram, URTP_DATAGRAM_SIZE);
+                if (pAudioLocal->socketMode == COMMS_TCP) {
+                    retValue = tcpSend(pAudioLocal->sock.pTcpSock, urtpDatagram, URTP_DATAGRAM_SIZE);
                 } else {
-                    retValue = pAudioCommsParams->sock.pUdpSock->sendto(pAudioCommsParams->server, urtpDatagram, URTP_DATAGRAM_SIZE);
+                    retValue = pAudioLocal->sock.pUdpSock->sendto(pAudioLocal->server, urtpDatagram, URTP_DATAGRAM_SIZE);
                 }
                 if (retValue != URTP_DATAGRAM_SIZE) {
                     badSendDurationTimer.start();
                     LOG(EVENT_SEND_FAILURE, retValue);
                     bad();
-                    gNumAudioSendFailures++;
+                    gDiagnostics.numAudioSendFailures++;
                 } else {
-                    gNumAudioBytesSent += retValue;
+                    gDiagnostics.numAudioBytesSent += retValue;
                     okToDelete = true;
                     badSendDurationTimer.stop();
                     badSendDurationTimer.reset();
@@ -601,22 +606,22 @@ static void sendAudioData(const AudioCommsParams * pAudioCommsParams)
 
             sendDurationTimer.stop();
             duration = sendDurationTimer.read_us();
-            gAverageAudioDatagramSendDuration += duration;
-            gNumAudioDatagrams++;
+            gDiagnostics.averageAudioDatagramSendDuration += duration;
+            gDiagnostics.numAudioDatagrams++;
 
             if (duration > BLOCK_DURATION_MS * 1000) {
                 // If this is UDP then it's serious, if it's TCP then
                 // we can catch up.
-                if (pAudioCommsParams->socketMode == COMMS_UDP) {
+                if (pAudioLocal->socketMode == COMMS_UDP) {
                     LOG(EVENT_SEND_DURATION_GREATER_THAN_BLOCK_DURATION, duration);
                 }
-                gNumAudioDatagramsSendTookTooLong++;
+                gDiagnostics.numAudioDatagramsSendTookTooLong++;
             } else {
                 //LOG(EVENT_SEND_DURATION, duration);
             }
-            if (duration > gWorstCaseAudioDatagramSendDuration) {
-                gWorstCaseAudioDatagramSendDuration = duration;
-                LOG(EVENT_NEW_PEAK_SEND_DURATION, gWorstCaseAudioDatagramSendDuration);
+            if (duration > gDiagnostics.worstCaseAudioDatagramSendDuration) {
+                gDiagnostics.worstCaseAudioDatagramSendDuration = duration;
+                LOG(EVENT_NEW_PEAK_SEND_DURATION, gDiagnostics.worstCaseAudioDatagramSendDuration);
             }
 
             if (okToDelete) {
@@ -724,19 +729,20 @@ static void stopI2s(I2S * pI2s)
 
 // Start audio streaming.
 // Note: here be multiple return statements.
-bool startStreaming()
+bool startStreaming(AudioLocal *pAudioLocal)
 {
     int retValue;
 
-    // Start the per-second monitor tick
+    // Start the per-second monitor tick and reset the diagnostics
     gAudioSecondTicker.attach_us(callback(&audioMonitor), 1000000);
+    memset(&gDiagnostics, 0, sizeof (gDiagnostics));
 
-    if (!startAudioStreamingConnection(&gAudioData)) {
+    if (!startAudioStreamingConnection(pAudioLocal)) {
         return false;
     }
 
     printf ("Setting up URTP...\n");
-    if (!gUrtp.init((void *) &gDatagramStorage)) {
+    if (!gUrtp.init((void *) &gDatagramStorage, pAudioLocal->fixedGain)) {
         bad();
         printf ("Unable to start URTP.\n");
         return false;
@@ -746,7 +752,7 @@ bool startStreaming()
     if (gpSendTask == NULL) {
         gpSendTask = new Thread();
     }
-    retValue = gpSendTask->start(callback(sendAudioData, &gAudioCommsParams));
+    retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
     if (retValue != osOK) {
         bad();
         printf ("Error starting task (%d).\n", retValue);
@@ -763,7 +769,7 @@ bool startStreaming()
 }
 
 // Stop audio streaming.
-void stopStreaming()
+void stopStreaming(AudioLocal *pAudioLocal)
 {
     stopI2s(&gMic);
 
@@ -777,7 +783,7 @@ void stopStreaming()
     gpSendTask = NULL;
     printf ("Audio send task stopped.\n");
 
-    stopAudioStreamingConnection();
+    stopAudioStreamingConnection(pAudioLocal);
 
     gAudioSecondTicker.detach();
 
@@ -884,12 +890,12 @@ void deleteObject(IocM2mObjectId id)
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
 static void cloudClientRegisteredCallback() {
-    printf("Cloud Client registered, press the user button to exit.\n");
+    printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 }
 
 // Callback when mbed Cloud Client deregisters from the LWM2M server.
 static void cloudClientDeregisteredCallback() {
-    printf("Cloud Client deregistered.\n");
+    printf("Mbed Cloud Client deregistered.\n");
 }
 
 // Callback that sets the power switch via the IocM2mPowerControl
@@ -937,7 +943,7 @@ static void executeResetTemperatureMinMax()
 
 // Callback that sets the configuration data via the IocM2mConfig
 // object.
-static void setConfigData(IocM2mConfig::Config *data)
+static void setConfigData(const IocM2mConfig::Config *data)
 {
     printf("Received new config settings:\n");
     printf("  initWakeUpTickPeriod %f.\n", data->initWakeUpTickPeriod);
@@ -954,31 +960,59 @@ static void setConfigData(IocM2mConfig::Config *data)
 
 // Callback that sets the configuration data via the IocM2mAudio
 // object.
-static void setAudioData(IocM2mAudio::Audio *data)
+static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
 {
+    bool streamingWasEnabled = gAudioLocalPending.streamingEnabled;
+
     printf("Received new audio parameters:\n");
-    printf("  streamingEnabled %d.\n", data->streamingEnabled);
-    printf("  duration %f.\n", data->duration);
-    printf("  fixedGain %f.\n", data->fixedGain);
-    printf("  audioCommunicationsMode %lld.\n", data->audioCommunicationsMode);
-    printf("  audioServerUrl \"%s\".\n", data->audioServerUrl.c_str());
+    printf("  streamingEnabled %d.\n", m2mAudio->streamingEnabled);
+    printf("  duration %f.\n", m2mAudio->duration);
+    printf("  fixedGain %f.\n", m2mAudio->fixedGain);
+    printf("  audioCommunicationsMode %lld.\n", m2mAudio->audioCommunicationsMode);
+    printf("  audioServerUrl \"%s\".\n", m2mAudio->audioServerUrl.c_str());
 
-    gAudioData = *data;
+    gAudioLocalPending.streamingEnabled = m2mAudio->streamingEnabled;
+    gAudioLocalPending.fixedGain = (int) m2mAudio->fixedGain;
+    gAudioLocalPending.duration = (int) m2mAudio->duration;
+    gAudioLocalPending.socketMode = m2mAudio->audioCommunicationsMode;
+    gAudioLocalPending.audioServerUrl = m2mAudio->audioServerUrl;
+    if (m2mAudio->streamingEnabled && !streamingWasEnabled) {
+        // Make a copy of the current audio settings so that
+        // the streaming process cannot be affected by server writes
+        // unless it is switched off and on again
+        gAudioLocalActive = gAudioLocalPending;
+        gAudioLocalPending.streamingEnabled = startStreaming(&gAudioLocalActive);
+        gAudioLocalActive.streamingEnabled = gAudioLocalPending.streamingEnabled;
+    } else if (!m2mAudio->streamingEnabled && streamingWasEnabled) {
+        stopStreaming(&gAudioLocalActive);
+        gAudioLocalPending.streamingEnabled = false;
+        gAudioLocalActive.streamingEnabled = false;
+    }
+}
 
-    // TODO act on it
+// Convert a local audio data structure to the IocM2mAudio one.
+static IocM2mAudio::Audio *convertAudioLocalToM2m (const AudioLocal *pLocal, IocM2mAudio::Audio *pM2m)
+{
+    pM2m->streamingEnabled = pLocal->streamingEnabled;
+    pM2m->duration = (float) pLocal->duration;
+    pM2m->fixedGain = (float) pLocal->fixedGain;
+    pM2m->audioCommunicationsMode = pLocal->socketMode;
+    pM2m->audioServerUrl = pLocal->audioServerUrl;
+
+    return pM2m;
 }
 
 // Callback that gets diagnostic data for the IocM2mDiagnostics object.
 static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 {
     data->upTime = 0; // TODO
-    data->worstCaseSendDuration = (float) gWorstCaseAudioDatagramSendDuration;
-    data->averageSendDuration = (float) (gAverageAudioDatagramSendDuration /
-                                         gNumAudioDatagrams);
+    data->worstCaseSendDuration = (float) gDiagnostics.worstCaseAudioDatagramSendDuration;
+    data->averageSendDuration = (float) (gDiagnostics.averageAudioDatagramSendDuration /
+                                         gDiagnostics.numAudioDatagrams);
     data->minNumDatagramsFree = gUrtp.getUrtpDatagramsFreeMin();
-    data->numSendFailures = gNumAudioSendFailures;
-    data->percentageSendsTooLong = (int64_t) gNumAudioDatagramsSendTookTooLong * 100 /
-                                   gNumAudioDatagrams;
+    data->numSendFailures = gDiagnostics.numAudioSendFailures;
+    data->percentageSendsTooLong = (int64_t) gDiagnostics.numAudioDatagramsSendTookTooLong * 100 /
+                                             gDiagnostics.numAudioDatagrams;
 
     return true;
 }
@@ -1030,11 +1064,12 @@ static bool init(bool resetStorage)
     gConfigData.batteryWakeUpTickPeriod = CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD;
     gConfigData.gnssEnable = CONFIG_DEFAULT_GNSS_ENABLE;
 
-    gAudioData.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
-    gAudioData.duration = AUDIO_DEFAULT_DURATION;
-    gAudioData.fixedGain = AUDIO_DEFAULT_FIXED_GAIN;
-    gAudioData.audioCommunicationsMode = AUDIO_DEFAULT_COMMUNICATION_MODE;
-    gAudioData.audioServerUrl = AUDIO_DEFAULT_SERVER_URL;
+    gAudioLocalPending.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
+    gAudioLocalPending.duration = AUDIO_DEFAULT_DURATION;
+    gAudioLocalPending.fixedGain = AUDIO_DEFAULT_FIXED_GAIN;
+    gAudioLocalPending.socketMode = AUDIO_DEFAULT_COMMUNICATION_MODE;
+    gAudioLocalPending.audioServerUrl = AUDIO_DEFAULT_SERVER_URL;
+    gAudioLocalPending.sock.pTcpSock = NULL;
 
     printf("Creating user button...\n");
     gpUserButton = new InterruptIn(SW0);
@@ -1090,29 +1125,13 @@ static bool init(bool resetStorage)
         bad();
         printf("Device not configured for Mbed Cloud Client.\n");
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-        printf("  You might want to clear mbed Cloud Client file storage and try again.\n");
+        printf("  You might want to clear Mbed Cloud Client file storage and try again.\n");
 #endif
         return false;
     }
 
     // Note sure if this is required or not; it doesn't do any harm.
     srand(time(NULL));
-
-    printf("Initialising cellular...\n");
-    gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
-                                               MBED_CONF_APP_MODEM_DEBUG_ON);
-    if (!gpCellular->init()) {
-        bad();
-        printf("Unable to initialise cellular.\n");
-        return false;
-    } else {
-        printf("Please wait up to 180 seconds to connect to the packet network...\n");
-        if (gpCellular->connect() != NSAPI_ERROR_OK) {
-            bad();
-            printf("Unable to connect to the cellular packet network.\n");
-            return false;
-        }
-    }
 
     printf("Initialising Mbed Cloud Client...\n");
     gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
@@ -1135,6 +1154,7 @@ static bool init(bool resetStorage)
     }
 
     printf("Creating all the other LWM2M objects...\n");
+    // Create temporary storage for copying things around
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof(gObjectList[0]); x++) {
         gObjectList[x].object.raw = NULL;
         gObjectList[x].updateObservableResources = NULL;
@@ -1151,8 +1171,11 @@ static bool init(bool resetStorage)
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
     addObject(IOC_M2M_CONFIG, new IocM2mConfig(setConfigData, &gConfigData,
                                                MBED_CONF_APP_OBJECT_DEBUG_ON));
-    addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData, &gAudioData,
+    IocM2mAudio::Audio *pTempStore = new IocM2mAudio::Audio;
+    addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData,
+                                             convertAudioLocalToM2m(&gAudioLocalPending, pTempStore),
                                              MBED_CONF_APP_OBJECT_DEBUG_ON));
+    delete pTempStore;
     addObject(IOC_M2M_DIAGNOSTICS, new IocM2mDiagnostics(getDiagnosticsData,
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
 
@@ -1162,16 +1185,32 @@ static bool init(bool resetStorage)
         bad();
         printf("Error starting Mbed Cloud Client.\n");
         return false;
+    }
+
+    printf("Initialising cellular...\n");
+    gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
+                                               MBED_CONF_APP_MODEM_DEBUG_ON);
+    if (!gpCellular->init()) {
+        bad();
+        printf("Unable to initialise cellular.\n");
+        return false;
+    }
+
+    printf("Please wait up to 180 seconds to connect to the cellular packet network...\n");
+    if (gpCellular->connect() != NSAPI_ERROR_OK) {
+        bad();
+        printf("Unable to connect to the cellular packet network.\n");
+        return false;
+    }
+
+    printf("Connecting to LWM2M server...\n");
+    if (!gpCloudClientDm->connect(gpCellular)) {
+        bad();
+        printf("Unable to connect to LWM2M server.\n");
+        return false;
     } else {
-        printf("Connecting to LWM2M server...\n");
-        if (!gpCloudClientDm->connect(gpCellular)) {
-            bad();
-            printf("Unable to connect to LWM2M server.\n");
-            return false;
-        } else {
-            printf("Connected to LWM2M server, registration should occur soon.\n");
-            // !!! SUCCESS !!!
-        }
+        printf("Connected to LWM2M server, please wait for registration to complete...\n");
+        // !!! SUCCESS !!!
     }
 
     return true;
@@ -1181,10 +1220,16 @@ static bool init(bool resetStorage)
 // Anything that was set up in init() should be cleared here.
 static void deinit()
 {
+    if (gAudioLocalActive.streamingEnabled) {
+        printf("Stopping streaming...\n");
+        stopStreaming(&gAudioLocalActive);
+    }
+
     if (gpCloudClientDm != NULL) {
         printf("Stopping Mbed Cloud Client...\n");
         gpCloudClientDm->stop();
     }
+
     printf("Deleting LWM2M objects...\n");
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof (gObjectList[0]); x++) {
         deleteObject((IocM2mObjectId) x);
@@ -1222,14 +1267,16 @@ static void deinit()
     LOG(EVENT_LOG_STOP, 0);
     printLog();
 
-    if (gNumAudioDatagrams > 0) {
+    if (gDiagnostics.numAudioDatagrams > 0) {
         printf("Stats:\n");
-        printf("Worst case time to perform a send: %llu us.\n", gWorstCaseAudioDatagramSendDuration);
-        printf("Average time to perform a send: %llu us.\n", gAverageAudioDatagramSendDuration);
+        printf("Worst case time to perform a send: %u us.\n", gDiagnostics.worstCaseAudioDatagramSendDuration);
+        printf("Average time to perform a send: %llu us.\n", gDiagnostics.averageAudioDatagramSendDuration);
         printf("Minimum number of datagram(s) free %d.\n", gUrtp.getUrtpDatagramsFreeMin());
-        printf("Number of send failure(s) %d,\n", gNumAudioSendFailures);
-        printf("%d send(s) took longer than %d ms (%llu%% of the total).\n", gNumAudioDatagramsSendTookTooLong,
-               BLOCK_DURATION_MS, (uint64_t) gNumAudioDatagramsSendTookTooLong * 100 / gNumAudioDatagrams);
+        printf("Number of send failure(s) %d,\n", gDiagnostics.numAudioSendFailures);
+        printf("%d send(s) took longer than %d ms (%llu%% of the total).\n",
+               gDiagnostics.numAudioDatagramsSendTookTooLong,
+               BLOCK_DURATION_MS, (uint64_t) gDiagnostics.numAudioDatagramsSendTookTooLong * 100 /
+                                             gDiagnostics.numAudioDatagrams);
     }
     printf("All stop.\n");
 }
@@ -1247,7 +1294,7 @@ int main() {
     // Initialise everything
     if (init(MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE)) {
 
-        printf("Starting event queue in context %p...\n", Thread::gettid());
+        // Start the event queue in the event thread
         gEventThread.start(callback(&gEventQueue, &EventQueue::dispatch_forever));
         gObjectUpdateEvent = gEventQueue.call_every(CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD * 1000, objectUpdate);
 

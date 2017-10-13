@@ -288,7 +288,7 @@ public:
      * @param initialValues the initial state of the configuration values.
      * @param debugOn       true if you want debug prints, otherwise false.
      */
-    IocM2mConfig(Callback<void(Config *)> setCallback,
+    IocM2mConfig(Callback<void(const Config *)> setCallback,
                  Config *initialValues,
                  bool debugOn = false);
 
@@ -353,7 +353,7 @@ protected:
 
     /** Callback to set configuration values.
      */
-    Callback<void(Config *)> _setCallback;
+    Callback<void(const Config *)> _setCallback;
 };
 
 /**********************************************************************
@@ -397,7 +397,7 @@ public:
      * @param initialValues the initial state of the audio parameter values.
      * @param debugOn       true if you want debug prints, otherwise false.
      */
-    IocM2mAudio(Callback<void(Audio *)> setCallback,
+    IocM2mAudio(Callback<void(const Audio *)> setCallback,
                 Audio *initialValues,
                 bool debugOn = false);
 
@@ -445,7 +445,7 @@ protected:
 
     /** Callback to set audio parmeters.
      */
-    Callback<void(Audio *)> _setCallback;
+    Callback<void(const Audio *)> _setCallback;
 };
 
 /**********************************************************************
