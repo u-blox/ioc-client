@@ -435,7 +435,7 @@ protected:
 #   define RESOURCE_NUMBER_AUDIO_COMMUNICATIONS_MODE "5526"
 
     /** The resource number for audioServerUrl,
-     * a Text resource
+     * a Text resource.
      */
 #   define RESOURCE_NUMBER_AUDIO_SERVER_URL "5527"
 

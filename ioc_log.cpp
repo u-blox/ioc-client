@@ -22,7 +22,6 @@
  * -------------------------------------------------------------- */
 
 // A logging buffer
-__attribute__ ((section ("CCMRAM")))
 static LogEntry gLog[MAX_NUM_LOG_ENTRIES];
 static LogEntry *gpLogNext = gLog;
 static unsigned int gNumLogEntries = 0;
