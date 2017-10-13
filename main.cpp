@@ -25,6 +25,11 @@
 #include "mbed_stats.h"
 #endif
 
+#if defined(MBED_CONF_MBED_TRACE_ENABLE) && MBED_CONF_MBED_TRACE_ENABLE
+#include "mbed-trace/mbed_trace.h"
+#include "mbed-trace-helper.h"
+#endif
+
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
@@ -497,14 +502,18 @@ static void stopAudioStreamingConnection(AudioLocal *pAudio)
         case COMMS_TCP:
             // No need to close() the socket,
             // the destructor does that.
-            delete pAudio->sock.pTcpSock;
-            pAudio->sock.pTcpSock = NULL;
+            if (pAudio->sock.pTcpSock) {
+                delete pAudio->sock.pTcpSock;
+                pAudio->sock.pTcpSock = NULL;
+            }
             break;
         case COMMS_UDP:
             // No need to close() the socket,
             // the destructor does that.
-            delete pAudio->sock.pUdpSock;
-            pAudio->sock.pUdpSock = NULL;
+            if (pAudio->sock.pUdpSock) {
+                delete pAudio->sock.pUdpSock;
+                pAudio->sock.pUdpSock = NULL;
+            }
             break;
         default:
             bad();
@@ -1286,6 +1295,19 @@ static void deinit()
  * -------------------------------------------------------------- */
 
 int main() {
+
+#if defined(MBED_CONF_MBED_TRACE_ENABLE) && MBED_CONF_MBED_TRACE_ENABLE
+    // NOTE: the mutex causes output to stop under heavy load, hence
+    // it is commented out here.
+    // Create mutex for tracing to avoid broken lines in logs
+    //MBED_ASSERT(mbed_trace_helper_create_mutex());
+
+    // Initialize mbed trace
+    mbed_trace_init();
+    //mbed_trace_mutex_wait_function_set(mbed_trace_helper_mutex_wait);
+    //mbed_trace_mutex_release_function_set(mbed_trace_helper_mutex_release);
+#endif
+
     printf("\n********** START **********\n");
 
     good();
