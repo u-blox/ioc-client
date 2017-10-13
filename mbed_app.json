@@ -11,8 +11,7 @@
                "MBED_CLIENT_USER_CONFIG_FILE=\"mbed_cloud_client_user_config.h\"",
                "MBED_CLOUD_CLIENT_USER_CONFIG_FILE=\"mbed_cloud_client_user_config.h\"",
                "PAL_USE_FATFS_SD=1",
-               "SA_PV_OS_MBEDOS",
-               "MBED_HEAP_STATS_ENABLED"],
+               "SA_PV_OS_MBEDOS"],
     "target_overrides": {
         "*": {
             "target.features_add": ["COMMON_PAL"],
@@ -20,9 +19,9 @@
             "drivers.uart-serial-txbuf-size": 256,
             "lwip.ppp-thread-stacksize": 768,
             "lwip.ppp-enabled": true,
-            "lwip.debug-enabled": true,
+            "lwip.debug-enabled": false,
             "ppp-cell-iface.apn-lookup": true,
-            "mbed-client.sn-coap-max-blockwise-payload-size": 1024,
+            "mbed-client.sn-coap-max-blockwise-payload-size": 512,
             "platform.stdio-convert-newlines": true,
             "platform.stdio-baud-rate": 115200,
             "mbed-trace.enable": false

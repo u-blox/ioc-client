@@ -497,6 +497,8 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
 // Stop the audio streaming connection.
 static void stopAudioStreamingConnection(AudioLocal *pAudio)
 {
+    // TODO: sometimes an attempt to close the socket result
+    // in a crash, come back to this...
     printf("Closing audio server socket...\n");
     switch (pAudio->socketMode) {
         case COMMS_TCP:
@@ -1196,7 +1198,7 @@ static bool init(bool resetStorage)
         return false;
     }
 
-    printf("Initialising cellular...\n");
+    printf("Initialising modem...\n");
     gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
                                                MBED_CONF_APP_MODEM_DEBUG_ON);
     if (!gpCellular->init()) {
@@ -1257,7 +1259,7 @@ static void deinit()
     if (gpCellular != NULL) {
         printf("Disconnecting from the cellular packet network...\n");
         gpCellular->disconnect();
-        printf("Stopping cellular modem...\n");
+        printf("Stopping modem...\n");
         gpCellular->deinit();
         delete gpCellular;
         gpCellular = NULL;
