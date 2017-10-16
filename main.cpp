@@ -47,15 +47,6 @@
 #  define MBED_CONF_APP_MODEM_DEBUG_ON false
 #endif
 
-#ifndef MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE
-// Whether to reset Mbed Cloud Client storage or not.
-// If this is true then you really need to have
-// MBED_CONF_APP_DEVELOPER_MODE defined and then a
-// new object ID will be created when the Mbed Cloud
-// Client registers with the server.
-#  define MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE false
-#endif
-
 // The baud rate to use with the modem.
 #define MODEM_BAUD_RATE 230400
 
@@ -108,6 +99,9 @@
 #define TEMPERATURE_MIN_MEASURABLE_RANGE -10.0
 #define TEMPERATURE_MAX_MEASURABLE_RANGE 120.0
 #define TEMPERATURE_UNITS "cel"
+
+// The period at which observable resources are updated
+#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD
 
 // A signal to indicate that an audio datagram is ready to send.
 #define SIG_DATAGRAM_READY 0x01
@@ -698,7 +692,7 @@ static bool startI2s(I2S * pI2s)
         (pI2s->format(24, 32, 0) == 0) &&
         (pI2s->audio_frequency(SAMPLING_FREQUENCY) == 0)) {
         if (gpI2sTask == NULL) {
-            gpI2sTask = new Thread();
+            gpI2sTask = new Thread(osPriorityRealtime);
         }
         if (gpI2sTask->start(gI2STaskCallback) == osOK) {
             if (pI2s->transfer((void *) NULL, 0,
@@ -706,7 +700,7 @@ static bool startI2s(I2S * pI2s)
                                event_callback_t(&i2sEventCallback),
                                I2S_EVENT_ALL) == 0) {
                 success = true;
-                printf("I2S started...\n");
+                printf("I2S started.\n");
             } else {
                 bad();
                 printf("Unable to start I2S transfer.\n");
@@ -761,7 +755,7 @@ bool startStreaming(AudioLocal *pAudioLocal)
 
     printf ("Starting task to send audio data...\n");
     if (gpSendTask == NULL) {
-        gpSendTask = new Thread();
+        gpSendTask = new Thread(osPriorityAboveNormal);
     }
     retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
     if (retValue != osOK) {
@@ -1001,6 +995,14 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
     }
 }
 
+// Callback that retrieves the state of streamingEnabled
+static bool getStreamingEnabled(bool *streamingEnabled)
+{
+    *streamingEnabled = gAudioLocalPending.streamingEnabled;
+
+    return true;
+}
+
 // Convert a local audio data structure to the IocM2mAudio one.
 static IocM2mAudio::Audio *convertAudioLocalToM2m (const AudioLocal *pLocal, IocM2mAudio::Audio *pM2m)
 {
@@ -1017,9 +1019,9 @@ static IocM2mAudio::Audio *convertAudioLocalToM2m (const AudioLocal *pLocal, Ioc
 static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 {
     data->upTime = 0; // TODO
-    data->worstCaseSendDuration = (float) gDiagnostics.worstCaseAudioDatagramSendDuration;
+    data->worstCaseSendDuration = (float) gDiagnostics.worstCaseAudioDatagramSendDuration / 1000000;
     data->averageSendDuration = (float) (gDiagnostics.averageAudioDatagramSendDuration /
-                                         gDiagnostics.numAudioDatagrams);
+                                         gDiagnostics.numAudioDatagrams) / 1000000;
     data->minNumDatagramsFree = gUrtp.getUrtpDatagramsFreeMin();
     data->numSendFailures = gDiagnostics.numAudioSendFailures;
     data->percentageSendsTooLong = (int64_t) gDiagnostics.numAudioDatagramsSendTookTooLong * 100 /
@@ -1056,8 +1058,9 @@ static void buttonCallback()
 // Initialise everything.  If you add anything here, be sure to
 // add the opposite to deinit().
 // Note: here be multiple return statements.
-static bool init(bool resetStorage)
+static bool init()
 {
+    bool cloudClientConfigGood = false;
     int x = 0;
 
     printf("Starting logging...\n");
@@ -1104,41 +1107,48 @@ static bool init(bool resetStorage)
     }
     printf("Mbed Cloud Client file storage initialised.\n");
 
-    if (resetStorage) {
-        // Use this function when you want to clear storage from all
-        // the factory-tool generated data and user data.
-        // After this operation device must be injected again by using
-        // factory tool or developer certificate.
-        printf("Resetting Mbed Cloud Client storage to an empty state...\n");
-        fcc_status_e deleteStatus = fcc_storage_delete();
-        if (deleteStatus != FCC_STATUS_SUCCESS) {
+    // Strictly speaking, the process here should be to look for the
+    // configuration files, which would have been set up at the factory
+    // and if they are not correct to bomb out.  However, we're running
+    // in developer mode and sometimes the Mbed Cloud Client code
+    // seems unhappy with the credentials stored on SD card for some
+    // reason.  Under these circumstances it is better to create new ones
+    // and get on with it, otherwise the device is lost to us.  So we try
+    // once and, if the credentials are bad, we reset the Mbed Cloud
+    // Client storage and try again one more time.
+    for (x = 0; (x < 2) && !cloudClientConfigGood; x++) {
+#ifdef MBED_CONF_APP_DEVELOPER_MODE
+        printf("Starting Mbed Cloud Client developer flow...\n");
+        status = fcc_developer_flow();
+        if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
+            printf("Mbed Cloud Client developer credentials already exist.\n");
+        } else if (status != FCC_STATUS_SUCCESS) {
             bad();
-            printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
+            printf("Failed to load Mbed Cloud Client developer credentials.\n");
             return false;
         }
-    }
-
-#ifdef MBED_CONF_APP_DEVELOPER_MODE
-    printf("Starting Mbed Cloud Client developer flow...\n");
-    status = fcc_developer_flow();
-    if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
-        printf("Mbed Cloud Client developer credentials already exist.\n");
-    } else if (status != FCC_STATUS_SUCCESS) {
-        bad();
-        printf("Failed to load Mbed Cloud Clientdeveloper credentials.\n");
-        return false;
-    }    
 #endif
 
-    printf("Checking Mbed Cloud Client configuration files...\n");
-    status = fcc_verify_device_configured_4mbed_cloud();
-    if (status != FCC_STATUS_SUCCESS) {
-        bad();
-        printf("Device not configured for Mbed Cloud Client.\n");
+        printf("Checking Mbed Cloud Client configuration files...\n");
+        status = fcc_verify_device_configured_4mbed_cloud();
+        if (status == FCC_STATUS_SUCCESS) {
+            cloudClientConfigGood = true;
+        } else {
+            printf("Device not configured for Mbed Cloud Client.\n");
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-        printf("  You might want to clear Mbed Cloud Client file storage and try again.\n");
+            // Use this function when you want to clear storage from all
+            // the factory-tool generated data and user data.
+            // After this operation device must be injected again by using
+            // factory tool or developer certificate.
+            printf("Resetting Mbed Cloud Client storage to an empty state...\n");
+            fcc_status_e deleteStatus = fcc_storage_delete();
+            if (deleteStatus != FCC_STATUS_SUCCESS) {
+                bad();
+                printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
+                return false;
+            }
+        }
 #endif
-        return false;
     }
 
     // Note sure if this is required or not; it doesn't do any harm.
@@ -1184,6 +1194,7 @@ static bool init(bool resetStorage)
                                                MBED_CONF_APP_OBJECT_DEBUG_ON));
     IocM2mAudio::Audio *pTempStore = new IocM2mAudio::Audio;
     addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData,
+                                             getStreamingEnabled,
                                              convertAudioLocalToM2m(&gAudioLocalPending, pTempStore),
                                              MBED_CONF_APP_OBJECT_DEBUG_ON));
     delete pTempStore;
@@ -1234,6 +1245,8 @@ static void deinit()
     if (gAudioLocalActive.streamingEnabled) {
         printf("Stopping streaming...\n");
         stopStreaming(&gAudioLocalActive);
+        gAudioLocalPending.streamingEnabled = false;
+        gAudioLocalActive.streamingEnabled = false;
     }
 
     if (gpCloudClientDm != NULL) {
@@ -1316,11 +1329,11 @@ int main() {
     heapStats();
 
     // Initialise everything
-    if (init(MBED_CONF_APP_CLOUD_CLIENT_RESET_STORAGE)) {
+    if (init()) {
 
         // Start the event queue in the event thread
         gEventThread.start(callback(&gEventQueue, &EventQueue::dispatch_forever));
-        gObjectUpdateEvent = gEventQueue.call_every(CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD * 1000, objectUpdate);
+        gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS * 1000, objectUpdate);
 
         for (int x = 0; !gUserButtonPressed; x++) {
             wait_ms(1000);

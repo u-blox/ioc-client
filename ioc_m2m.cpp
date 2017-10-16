@@ -306,7 +306,7 @@ void IocM2mConfig::objectUpdated(const char *resourceName)
  */
 const M2MObjectHelper::DefObject IocM2mAudio::_defObject =
     {0, "32770", 5,
-        -1, RESOURCE_NUMBER_STREAMING_ENABLED, "boolean", M2MResourceBase::BOOLEAN, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        -1, RESOURCE_NUMBER_STREAMING_ENABLED, "boolean", M2MResourceBase::BOOLEAN, true, M2MBase::GET_PUT_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_DURATION, "duration", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_FIXED_GAIN, "level", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_AUDIO_COMMUNICATIONS_MODE, "mode", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
@@ -315,6 +315,7 @@ const M2MObjectHelper::DefObject IocM2mAudio::_defObject =
 
 // Constructor.
 IocM2mAudio::IocM2mAudio(Callback<void(const Audio *)> setCallback,
+                         Callback<bool(bool *)> getStreamingEnabledCallback,
                          Audio *initialValues,
                          bool debugOn)
             :M2MObjectHelper(&_defObject,
@@ -323,6 +324,7 @@ IocM2mAudio::IocM2mAudio(Callback<void(const Audio *)> setCallback,
                              debugOn)
 {
     _setCallback = setCallback;
+    _getStreamingEnabledCallback = getStreamingEnabledCallback;
 
     // Make the object and its resources
     MBED_ASSERT(makeObject());
@@ -333,6 +335,9 @@ IocM2mAudio::IocM2mAudio(Callback<void(const Audio *)> setCallback,
     MBED_ASSERT(setResourceValue(initialValues->fixedGain,  RESOURCE_NUMBER_FIXED_GAIN));
     MBED_ASSERT(setResourceValue(initialValues->audioCommunicationsMode, RESOURCE_NUMBER_AUDIO_COMMUNICATIONS_MODE));
     MBED_ASSERT(setResourceValue(initialValues->audioServerUrl, RESOURCE_NUMBER_AUDIO_SERVER_URL));
+
+    // Update the observable resources
+    updateObservableResources();
 
     printfLog("IocM2mAudio: object initialised.\n");
 }
@@ -364,6 +369,20 @@ void IocM2mAudio::objectUpdated(const char *resourceName)
 
     if (_setCallback) {
         _setCallback(&audio);
+    }
+}
+
+// Update the observable data for this object.
+void IocM2mAudio::updateObservableResources()
+{
+    bool streamingEnabled;
+
+    // Update the data
+    if (_getStreamingEnabledCallback) {
+        if (_getStreamingEnabledCallback(&streamingEnabled)) {
+            // Set the values in the resources based on the new data
+            MBED_ASSERT(setResourceValue(streamingEnabled, RESOURCE_NUMBER_STREAMING_ENABLED));
+        }
     }
 }
 

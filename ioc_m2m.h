@@ -393,11 +393,19 @@ public:
 
     /** Constructor.
      *
-     * @param setCallback   callback to set the audio parameter values.
-     * @param initialValues the initial state of the audio parameter values.
-     * @param debugOn       true if you want debug prints, otherwise false.
+     * @param setCallback                  callback to set the audio
+     *                                     parameter values.
+     * @param getStreamingEnabledCallback  since enabling streaming
+     *                                     can fail, the Boolean value
+     *                                     is observable through this
+     *                                     callback.
+     * @param initialValues                the initial state of the audio
+     *                                     parameter values.
+     * @param debugOn                      true if you want debug prints,
+     *                                     otherwise false.
      */
     IocM2mAudio(Callback<void(const Audio *)> setCallback,
+                Callback<bool(bool *)> getStreamingEnabledCallback,
                 Audio *initialValues,
                 bool debugOn = false);
 
@@ -411,6 +419,10 @@ public:
      * @param resourceName the resource that was updated.
      */
     void objectUpdated(const char *resourceName);
+
+    /** Update the observable resources (using getCallback()).
+     */
+    void updateObservableResources();
 
 protected:
 
@@ -446,6 +458,10 @@ protected:
     /** Callback to set audio parmeters.
      */
     Callback<void(const Audio *)> _setCallback;
+
+    /** Callback to obtain the streaming enabled state.
+     */
+    Callback<bool(bool *)> _getStreamingEnabledCallback;
 };
 
 /**********************************************************************
