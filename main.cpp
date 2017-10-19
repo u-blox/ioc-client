@@ -229,7 +229,7 @@ static IocM2mTemperature::Temperature gTemperatureData;
 static IocM2mConfig::Config gConfigData;
 
 // The event loop and event queue.
-static Thread gEventThread;
+static Thread *gpEventThread = NULL;
 static EventQueue gEventQueue (32 * EVENTS_EVENT_SIZE);
 
 // Event ID for the LWM2M object update event.
@@ -312,6 +312,13 @@ static void event() {
 // Unset blue
 static void notEvent() {
     gLedBlue = 1;
+}
+
+// Flash blue
+static void flash() {
+    gLedBlue = !gLedBlue;
+    wait_ms(50);
+    gLedBlue = !gLedBlue;
 }
 
 // All off
@@ -429,6 +436,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
     nsapi_error_t nsapiError;
     const int setOption = 1;
 
+    flash();
     printf("Resolving IP address of the audio streaming server...\n");
     if (!gpCellular || !gpCellular->is_connected()) {
         bad();
@@ -453,6 +461,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
         }
     }
 
+    flash();
     printf("Opening socket to server for audio comms...\n");
     switch (pAudio->socketMode) {
         case COMMS_TCP:
@@ -507,8 +516,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
 // Stop the audio streaming connection.
 static void stopAudioStreamingConnection(AudioLocal *pAudio)
 {
-    // TODO: sometimes an attempt to close the socket result
-    // in a crash, come back to this...
+    flash();
     printf("Closing audio server socket...\n");
     switch (pAudio->socketMode) {
         case COMMS_TCP:
@@ -711,6 +719,7 @@ static bool startI2s(I2S * pI2s)
 {
     bool success = false;
 
+    flash();
     printf("Starting I2S...\n");
     if ((pI2s->protocol(PHILIPS) == 0) &&
         (pI2s->mode(MASTER_RX, true) == 0) &&
@@ -742,6 +751,7 @@ static bool startI2s(I2S * pI2s)
 // Stop the I2S interface.
 static void stopI2s(I2S * pI2s)
 {
+    flash();
     printf("Stopping I2S...\n");
     pI2s->abort_all_transfers();
     if (gpI2sTask != NULL) {
@@ -771,6 +781,7 @@ bool startStreaming(AudioLocal *pAudioLocal)
         return false;
     }
 
+    flash();
     printf ("Setting up URTP...\n");
     if (!gUrtp.init((void *) &gDatagramStorage, pAudioLocal->fixedGain)) {
         bad();
@@ -778,6 +789,7 @@ bool startStreaming(AudioLocal *pAudioLocal)
         return false;
     }
 
+    flash();
     printf ("Starting task to send audio data...\n");
     if (gpSendTask == NULL) {
         gpSendTask = new Thread();
@@ -806,11 +818,15 @@ void stopStreaming(AudioLocal *pAudioLocal)
     // Wait for any on-going transmissions to complete
     wait_ms(2000);
 
+    flash();
     printf ("Stopping audio send task...\n");
     gpSendTask->terminate();
     gpSendTask->join();
     delete gpSendTask;
     gpSendTask = NULL;
+    gLedGreen = 0;  // Make sure the green LED stays on at
+                    // the end as it will have been
+                    // toggling throughout
     printf ("Audio send task stopped.\n");
 
     stopAudioStreamingConnection(pAudioLocal);
@@ -920,12 +936,14 @@ void deleteObject(IocM2mObjectId id)
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
 static void cloudClientRegisteredCallback() {
+    flash();
     good();
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 }
 
 // Callback when mbed Cloud Client deregisters from the LWM2M server.
 static void cloudClientDeregisteredCallback() {
+    flash();
     printf("Mbed Cloud Client deregistered.\n");
 }
 
@@ -1059,6 +1077,7 @@ static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 // Callback to update the observable values in all of the LWM2M objects.
 static void objectUpdate()
 {
+    flash();
     for (unsigned int x = 0; x < sizeof (gObjectList) /
                                  sizeof (gObjectList[0]); x++) {
         if (gObjectList[x].updateObservableResources) {
@@ -1091,10 +1110,12 @@ static bool init()
     int x = 0;
     int y = 0;
 
+    flash();
     printf("Starting logging...\n");
     initLog();
     LOG(EVENT_LOG_START, 0);
 
+    flash();
     printf("Setting up data storage...\n");
     memset(&gLocationData, 0, sizeof (gLocationData));
     memset(&gTemperatureData, 0, sizeof (gTemperatureData));
@@ -1113,10 +1134,12 @@ static bool init()
     gAudioLocalPending.audioServerUrl = AUDIO_DEFAULT_SERVER_URL;
     gAudioLocalPending.sock.pTcpSock = NULL;
 
+    flash();
     printf("Creating user button...\n");
     gpUserButton = new InterruptIn(SW0);
     gpUserButton->rise(&buttonCallback);
 
+    flash();
     printf("Starting SD card...\n");
     x = sd.init();
     if (x != 0) {
@@ -1126,6 +1149,7 @@ static bool init()
     }
     printf("SD card started.\n");
 
+    flash();
     printf("Initialising Mbed Cloud Client file storage...\n");
     fcc_status_e status = fcc_init();
     if(status != FCC_STATUS_SUCCESS) {
@@ -1149,6 +1173,7 @@ static bool init()
         // Client storage and try again one more time.
         for (x = 0; (x < 2) && !cloudClientConfigGood; x++) {
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
+            flash();
             printf("Starting Mbed Cloud Client developer flow...\n");
             status = fcc_developer_flow();
             if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
@@ -1160,6 +1185,7 @@ static bool init()
             }
 #endif
 
+            flash();
             printf("Checking Mbed Cloud Client configuration files...\n");
             status = fcc_verify_device_configured_4mbed_cloud();
             if (status == FCC_STATUS_SUCCESS) {
@@ -1171,6 +1197,7 @@ static bool init()
                 // the factory-tool generated data and user data.
                 // After this operation device must be injected again by using
                 // factory tool or developer certificate.
+                flash();
                 printf("Resetting Mbed Cloud Client storage to an empty state...\n");
                 fcc_status_e deleteStatus = fcc_storage_delete();
                 if (deleteStatus != FCC_STATUS_SUCCESS) {
@@ -1185,16 +1212,18 @@ static bool init()
         // Note sure if this is required or not; it doesn't do any harm.
         srand(time(NULL));
 
+        flash();
         printf("Initialising Mbed Cloud Client...\n");
         gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
                                             &cloudClientRegisteredCallback,
                                             &cloudClientDeregisteredCallback);
 
+        flash();
         printf("Configuring the LWM2M Device object...\n");
         if (gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
             gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) &&
             gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) &&
-            gpCloudClientDm->setDeviceObjectStaticSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
+            gpCloudClientDm->setDeviceObjectSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
             gpCloudClientDm->setDeviceObjectFirmwareVersion(DEVICE_OBJECT_FIRMWARE_VERSION) &&
             gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY) &&
             gpCloudClientDm->setDeviceObjectMemoryTotal(DEVICE_OBJECT_MEMORY_TOTAL) &&
@@ -1213,6 +1242,7 @@ static bool init()
         return false;
     }
 
+    flash();
     printf("Creating all the other LWM2M objects...\n");
     // Create temporary storage for copying things around
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof(gObjectList[0]); x++) {
@@ -1240,6 +1270,7 @@ static bool init()
     addObject(IOC_M2M_DIAGNOSTICS, new IocM2mDiagnostics(getDiagnosticsData,
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
 
+    flash();
     printf("Starting Mbed Cloud Client...\n");
     gpCloudClientGlobalUpdateCallback = new UpdateCallback();
     if (!gpCloudClientDm->start(gpCloudClientGlobalUpdateCallback)) {
@@ -1248,6 +1279,7 @@ static bool init()
         return false;
     }
 
+    flash();
     printf("Initialising modem...\n");
     gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
                                                MBED_CONF_APP_MODEM_DEBUG_ON);
@@ -1257,6 +1289,7 @@ static bool init()
         return false;
     }
 
+    flash();
     printf("Please wait up to 180 seconds to connect to the cellular packet network...\n");
     if (gpCellular->connect() != NSAPI_ERROR_OK) {
         bad();
@@ -1264,6 +1297,7 @@ static bool init()
         return false;
     }
 
+    flash();
     printf("Connecting to LWM2M server...\n");
     if (!gpCloudClientDm->connect(gpCellular)) {
         bad();
@@ -1274,6 +1308,11 @@ static bool init()
         // !!! SUCCESS !!!
     }
 
+    // Start the event queue in the event thread
+    gpEventThread = new Thread();
+    gpEventThread->start(callback(&gEventQueue, &EventQueue::dispatch_forever));
+    gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS * 1000, objectUpdate);
+
     return true;
 }
 
@@ -1281,7 +1320,14 @@ static bool init()
 // Anything that was set up in init() should be cleared here.
 static void deinit()
 {
+    // Stop the event queue
+    gpEventThread->terminate();
+    gpEventThread->join();
+    delete gpEventThread;
+    gpEventThread = NULL;
+
     if (gAudioLocalActive.streamingEnabled) {
+        flash();
         printf("Stopping streaming...\n");
         stopStreaming(&gAudioLocalActive);
         gAudioLocalPending.streamingEnabled = false;
@@ -1289,16 +1335,19 @@ static void deinit()
     }
 
     if (gpCloudClientDm != NULL) {
+        flash();
         printf("Stopping Mbed Cloud Client...\n");
         gpCloudClientDm->stop();
     }
 
+    flash();
     printf("Deleting LWM2M objects...\n");
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof (gObjectList[0]); x++) {
         deleteObject((IocM2mObjectId) x);
     }
 
     if (gpCloudClientDm != NULL) {
+        flash();
         printf("Deleting Mbed Cloud Client...\n");
         delete gpCloudClientDm;
         gpCloudClientDm = NULL;
@@ -1309,23 +1358,28 @@ static void deinit()
     }
 
     if (gpCellular != NULL) {
+        flash();
         printf("Disconnecting from the cellular packet network...\n");
         gpCellular->disconnect();
+        flash();
         printf("Stopping modem...\n");
         gpCellular->deinit();
         delete gpCellular;
         gpCellular = NULL;
     }
 
+    flash();
     printf("Closing SD card...\n");
     sd.deinit();
 
+    flash();
     printf("Removing user button...\n");
     if (gpUserButton != NULL) {
         delete gpUserButton;
         gpUserButton = NULL;
     }
 
+    flash();
     printf("Printing the log...\n");
     LOG(EVENT_LOG_STOP, 0);
     printLog();
@@ -1370,20 +1424,17 @@ int main() {
     // Initialise everything
     if (init()) {
 
-        // Start the event queue in the event thread
-        gEventThread.start(callback(&gEventQueue, &EventQueue::dispatch_forever));
-        gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS * 1000, objectUpdate);
-
         for (int x = 0; !gUserButtonPressed; x++) {
             Thread::yield();
         }
 
         // Shut everything down
         deinit();
+
+        ledOff();
     }
 
     heapStats();
-    ledOff();
     printf("********** STOP **********\n");
 }
 
