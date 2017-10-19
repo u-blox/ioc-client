@@ -54,6 +54,16 @@
 #define COMMS_TCP 1
 #define COMMS_UDP 0
 
+// Length of one TCP packet, must be at least
+// URTP_DATAGRAM_SIZE, best is if it is a multiple
+// of URTP_DATAGRAM_SIZE that fits within a sensible
+// TCP packet size
+#ifdef TCP_MSS
+# define TCP_BUFFER_LENGTH TCP_MSS
+#else
+# define TCP_BUFFER_LENGTH URTP_DATAGRAM_SIZE * 4
+#endif
+
 // The maximum amount of time allowed to send a
 // datagram of audio over TCP.
 #define AUDIO_TCP_SEND_TIMEOUT_MS 1500
@@ -240,6 +250,10 @@ static uint32_t gRawAudio[(SAMPLES_PER_BLOCK * 2) * 2];
 // Datagram storage for URTP.
 __attribute__ ((section ("CCMRAM")))
 static char gDatagramStorage[URTP_DATAGRAM_STORE_SIZE];
+
+// Buffer that holds one TCP packet
+static char gTcpBuffer[TCP_BUFFER_LENGTH];
+static char *gpTcpBuffer = gTcpBuffer;
 
 // Task to send data off to the audio streaming server.
 static Thread *gpSendTask = NULL;
@@ -449,6 +463,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
                 printf("Could not open TCP socket to audio streaming server (error %d).\n", nsapiError);
                 return false;
             } else {
+                pAudio->sock.pTcpSock->set_timeout(1000);
                 printf("Connecting TCP...\n");
                 nsapiError = pAudio->sock.pTcpSock->connect(pAudio->server);
                 if (nsapiError != NSAPI_ERROR_OK) {
@@ -475,6 +490,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
                 printf("Could not open UDP socket to audio streaming server (error %d).\n", nsapiError);
                 return false;
             }
+            pAudio->sock.pUdpSock->set_timeout(1000);
             break;
         default:
             bad();
@@ -552,7 +568,7 @@ static int tcpSend(TCPSocket * pSock, const char * pData, int size)
 // to send.
 static void sendAudioData(const AudioLocal * pAudioLocal)
 {
-    const char * urtpDatagram = NULL;
+    const char * pUrtpDatagram = NULL;
     Timer sendDurationTimer;
     Timer badSendDurationTimer;
     unsigned int duration;
@@ -563,17 +579,26 @@ static void sendAudioData(const AudioLocal * pAudioLocal)
         // Wait for at least one datagram to be ready to send
         Thread::signal_wait(SIG_DATAGRAM_READY, AUDIO_SEND_DATA_RUN_ANYWAY_TIME_MS);
 
-        while ((urtpDatagram = gUrtp.getUrtpDatagram()) != NULL) {
+        while ((pUrtpDatagram = gUrtp.getUrtpDatagram()) != NULL) {
             okToDelete = false;
             sendDurationTimer.reset();
             sendDurationTimer.start();
             // Send the datagram
             if (gAudioCommsConnected) {
-                //LOG(EVENT_SEND_START, (int) urtpDatagram);
+                //LOG(EVENT_SEND_START, (int) pUrtpDatagram);
                 if (pAudioLocal->socketMode == COMMS_TCP) {
-                    retValue = tcpSend(pAudioLocal->sock.pTcpSock, urtpDatagram, URTP_DATAGRAM_SIZE);
+                    // For TCP, assemble the datagrams
+                    // into a whole packet before sending
+                    // for maximum efficiency
+                    memcpy (gpTcpBuffer, pUrtpDatagram, URTP_DATAGRAM_SIZE);
+                    gpTcpBuffer += URTP_DATAGRAM_SIZE;
+                    retValue = URTP_DATAGRAM_SIZE;
+                    if (gpTcpBuffer >= gTcpBuffer + sizeof(gTcpBuffer)) {
+                        gpTcpBuffer = gTcpBuffer;
+                        retValue = tcpSend(pAudioLocal->sock.pTcpSock, pUrtpDatagram, URTP_DATAGRAM_SIZE);
+                    }
                 } else {
-                    retValue = pAudioLocal->sock.pUdpSock->sendto(pAudioLocal->server, urtpDatagram, URTP_DATAGRAM_SIZE);
+                    retValue = pAudioLocal->sock.pUdpSock->sendto(pAudioLocal->server, pUrtpDatagram, URTP_DATAGRAM_SIZE);
                 }
                 if (retValue != URTP_DATAGRAM_SIZE) {
                     badSendDurationTimer.start();
@@ -587,7 +612,7 @@ static void sendAudioData(const AudioLocal * pAudioLocal)
                     badSendDurationTimer.reset();
                     toggleGreen();
                 }
-                //LOG(EVENT_SEND_STOP, (int) urtpDatagram);
+                //LOG(EVENT_SEND_STOP, (int) pUrtpDatagram);
 
                 if (retValue < 0) {
                     // If the connection has gone, set a flag that will be picked up outside this function and
@@ -630,7 +655,7 @@ static void sendAudioData(const AudioLocal * pAudioLocal)
             }
 
             if (okToDelete) {
-                gUrtp.setUrtpDatagramAsRead(urtpDatagram);
+                gUrtp.setUrtpDatagramAsRead(pUrtpDatagram);
             }
         }
     }
@@ -692,7 +717,7 @@ static bool startI2s(I2S * pI2s)
         (pI2s->format(24, 32, 0) == 0) &&
         (pI2s->audio_frequency(SAMPLING_FREQUENCY) == 0)) {
         if (gpI2sTask == NULL) {
-            gpI2sTask = new Thread(osPriorityRealtime);
+            gpI2sTask = new Thread();
         }
         if (gpI2sTask->start(gI2STaskCallback) == osOK) {
             if (pI2s->transfer((void *) NULL, 0,
@@ -755,7 +780,7 @@ bool startStreaming(AudioLocal *pAudioLocal)
 
     printf ("Starting task to send audio data...\n");
     if (gpSendTask == NULL) {
-        gpSendTask = new Thread(osPriorityAboveNormal);
+        gpSendTask = new Thread();
     }
     retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
     if (retValue != osOK) {
@@ -895,6 +920,7 @@ void deleteObject(IocM2mObjectId id)
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
 static void cloudClientRegisteredCallback() {
+    good();
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 }
 
@@ -1061,7 +1087,9 @@ static void buttonCallback()
 static bool init()
 {
     bool cloudClientConfigGood = false;
+    bool dmObjectConfigGood = false;
     int x = 0;
+    int y = 0;
 
     printf("Starting logging...\n");
     initLog();
@@ -1107,70 +1135,81 @@ static bool init()
     }
     printf("Mbed Cloud Client file storage initialised.\n");
 
-    // Strictly speaking, the process here should be to look for the
-    // configuration files, which would have been set up at the factory
-    // and if they are not correct to bomb out.  However, we're running
-    // in developer mode and sometimes the Mbed Cloud Client code
-    // seems unhappy with the credentials stored on SD card for some
-    // reason.  Under these circumstances it is better to create new ones
-    // and get on with it, otherwise the device is lost to us.  So we try
-    // once and, if the credentials are bad, we reset the Mbed Cloud
-    // Client storage and try again one more time.
-    for (x = 0; (x < 2) && !cloudClientConfigGood; x++) {
+    // I have seen device object configuration attempts fail due
+    // to storage errors so, if one occurs, try a second time.
+    for (y = 0; (y < 2) && !dmObjectConfigGood; y++) {
+        // Strictly speaking, the process here should be to look for the
+        // configuration files, which would have been set up at the factory
+        // and if they are not correct to bomb out.  However, we're running
+        // in developer mode and sometimes the Mbed Cloud Client code
+        // seems unhappy with the credentials stored on SD card for some
+        // reason.  Under these circumstances it is better to create new ones
+        // and get on with it, otherwise the device is lost to us.  So we try
+        // once and, if the credentials are bad, we reset the Mbed Cloud
+        // Client storage and try again one more time.
+        for (x = 0; (x < 2) && !cloudClientConfigGood; x++) {
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
-        printf("Starting Mbed Cloud Client developer flow...\n");
-        status = fcc_developer_flow();
-        if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
-            printf("Mbed Cloud Client developer credentials already exist.\n");
-        } else if (status != FCC_STATUS_SUCCESS) {
-            bad();
-            printf("Failed to load Mbed Cloud Client developer credentials.\n");
-            return false;
-        }
-#endif
-
-        printf("Checking Mbed Cloud Client configuration files...\n");
-        status = fcc_verify_device_configured_4mbed_cloud();
-        if (status == FCC_STATUS_SUCCESS) {
-            cloudClientConfigGood = true;
-        } else {
-            printf("Device not configured for Mbed Cloud Client.\n");
-#ifdef MBED_CONF_APP_DEVELOPER_MODE
-            // Use this function when you want to clear storage from all
-            // the factory-tool generated data and user data.
-            // After this operation device must be injected again by using
-            // factory tool or developer certificate.
-            printf("Resetting Mbed Cloud Client storage to an empty state...\n");
-            fcc_status_e deleteStatus = fcc_storage_delete();
-            if (deleteStatus != FCC_STATUS_SUCCESS) {
+            printf("Starting Mbed Cloud Client developer flow...\n");
+            status = fcc_developer_flow();
+            if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
+                printf("Mbed Cloud Client developer credentials already exist.\n");
+            } else if (status != FCC_STATUS_SUCCESS) {
                 bad();
-                printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
+                printf("Failed to load Mbed Cloud Client developer credentials.\n");
                 return false;
             }
-        }
 #endif
+
+            printf("Checking Mbed Cloud Client configuration files...\n");
+            status = fcc_verify_device_configured_4mbed_cloud();
+            if (status == FCC_STATUS_SUCCESS) {
+                cloudClientConfigGood = true;
+            } else {
+                printf("Device not configured for Mbed Cloud Client.\n");
+#ifdef MBED_CONF_APP_DEVELOPER_MODE
+                // Use this function when you want to clear storage from all
+                // the factory-tool generated data and user data.
+                // After this operation device must be injected again by using
+                // factory tool or developer certificate.
+                printf("Resetting Mbed Cloud Client storage to an empty state...\n");
+                fcc_status_e deleteStatus = fcc_storage_delete();
+                if (deleteStatus != FCC_STATUS_SUCCESS) {
+                    bad();
+                    printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
+                    return false;
+                }
+#endif
+            }
+        }
+
+        // Note sure if this is required or not; it doesn't do any harm.
+        srand(time(NULL));
+
+        printf("Initialising Mbed Cloud Client...\n");
+        gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
+                                            &cloudClientRegisteredCallback,
+                                            &cloudClientDeregisteredCallback);
+
+        printf("Configuring the LWM2M Device object...\n");
+        if (gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
+            gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) &&
+            gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) &&
+            gpCloudClientDm->setDeviceObjectStaticSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
+            gpCloudClientDm->setDeviceObjectFirmwareVersion(DEVICE_OBJECT_FIRMWARE_VERSION) &&
+            gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY) &&
+            gpCloudClientDm->setDeviceObjectMemoryTotal(DEVICE_OBJECT_MEMORY_TOTAL) &&
+            gpCloudClientDm->setDeviceObjectUtcOffset(DEVICE_OBJECT_UTC_OFFSET) &&
+            gpCloudClientDm->setDeviceObjectTimezone(DEVICE_OBJECT_TIMEZONE)) {
+            dmObjectConfigGood = true;
+        } else {
+            cloudClientConfigGood = false;
+            printf("Unable to configure the Device object.\n");
+        }
     }
 
-    // Note sure if this is required or not; it doesn't do any harm.
-    srand(time(NULL));
-
-    printf("Initialising Mbed Cloud Client...\n");
-    gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
-                                        &cloudClientRegisteredCallback,
-                                        &cloudClientDeregisteredCallback);
-
-    printf("Configuring the LWM2M Device object...\n");
-    if (!gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) ||
-        !gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) ||
-        !gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) ||
-        !gpCloudClientDm->setDeviceObjectStaticSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) ||
-        !gpCloudClientDm->setDeviceObjectFirmwareVersion(DEVICE_OBJECT_FIRMWARE_VERSION) ||
-        !gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY) ||
-        !gpCloudClientDm->setDeviceObjectMemoryTotal(DEVICE_OBJECT_MEMORY_TOTAL) ||
-        !gpCloudClientDm->setDeviceObjectUtcOffset(DEVICE_OBJECT_UTC_OFFSET) ||
-        !gpCloudClientDm->setDeviceObjectTimezone(DEVICE_OBJECT_TIMEZONE)) {
+    if (!dmObjectConfigGood) {
         bad();
-        printf("Unable to configure the Device object.\n");
+        printf("Unable to configure the Device object after %d attempts.\n", y - 1);
         return false;
     }
 
@@ -1294,9 +1333,10 @@ static void deinit()
     if (gDiagnostics.numAudioDatagrams > 0) {
         printf("Stats:\n");
         printf("Worst case time to perform a send: %u us.\n", gDiagnostics.worstCaseAudioDatagramSendDuration);
-        printf("Average time to perform a send: %llu us.\n", gDiagnostics.averageAudioDatagramSendDuration);
+        printf("Average time to perform a send: %llu us.\n", gDiagnostics.averageAudioDatagramSendDuration /
+                                                             gDiagnostics.numAudioDatagrams);
         printf("Minimum number of datagram(s) free %d.\n", gUrtp.getUrtpDatagramsFreeMin());
-        printf("Number of send failure(s) %d,\n", gDiagnostics.numAudioSendFailures);
+        printf("Number of send failure(s) %d.\n", gDiagnostics.numAudioSendFailures);
         printf("%d send(s) took longer than %d ms (%llu%% of the total).\n",
                gDiagnostics.numAudioDatagramsSendTookTooLong,
                BLOCK_DURATION_MS, (uint64_t) gDiagnostics.numAudioDatagramsSendTookTooLong * 100 /
@@ -1325,7 +1365,6 @@ int main() {
 
     printf("\n********** START **********\n");
 
-    good();
     heapStats();
 
     // Initialise everything
@@ -1336,8 +1375,7 @@ int main() {
         gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS * 1000, objectUpdate);
 
         for (int x = 0; !gUserButtonPressed; x++) {
-            wait_ms(1000);
-            toggleGreen();
+            Thread::yield();
         }
 
         // Shut everything down
