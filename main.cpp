@@ -21,6 +21,7 @@
 #include "I2S.h"
 #include "urtp.h"
 #include "ioc_log.h"
+#include "stm32f4xx_hal_iwdg.h"
 #ifdef MBED_HEAP_STATS_ENABLED
 #include "mbed_stats.h"
 #endif
@@ -110,11 +111,20 @@
 #define TEMPERATURE_MAX_MEASURABLE_RANGE 120.0
 #define TEMPERATURE_UNITS "cel"
 
-// The period at which observable resources are updated
-#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD
+// The period at which observable resources are updated.
+#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD * 1000
+
+// The period after which the "bad" status LED is tidied up.
+#define BAD_OFF_PERIOD_MS 10000
 
 // A signal to indicate that an audio datagram is ready to send.
 #define SIG_DATAGRAM_READY 0x01
+
+// Interval at which the watchdog should be fed.
+#define WATCHDOG_WAKEUP_MS 30000
+
+// The interval at which we check for exit.
+#define BUTTON_CHECK_INTERVAL_MS 1000
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -123,7 +133,7 @@
 // The identifiers for each LWM2M object.
 //
 // To add a new object:
-// - create the object (over in ioc-m2m.h/.cpp),
+// - create the object (over in ioc-m2m.h/ioc-m2m.cpp),
 // - add an entry for it here,
 // - add it to IocM2mObjectPointerUnion,
 // - add it to addObject() and deleteObject(),
@@ -272,6 +282,14 @@ static I2S gMic(PB_15, PB_10, PB_9);
 static InterruptIn *gpUserButton = NULL;
 static volatile bool gUserButtonPressed = false;
 
+// For the watchdog.
+// A prescaler value of 256 and a reload
+// value of 0x0FFF gives a watchdog
+// period of ~32 seconds (see STM32F4 manual
+// section 21.3.3)
+static IWDG_HandleTypeDef gWdt = {IWDG,
+                                  {IWDG_PRESCALER_256, 0x0FFF}};
+
 // LEDs for user feedback and diagnostics.
 static DigitalOut gLedRed(LED1, 1);
 static DigitalOut gLedGreen(LED2, 1);
@@ -279,7 +297,7 @@ static DigitalOut gLedBlue(LED3, 1);
 
 // For diagnostics.
 static DiagnosticsLocal gDiagnostics = {0};
-static Ticker gAudioSecondTicker;
+static Ticker gSecondTicker;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: DIAGNOSTICS
@@ -292,11 +310,19 @@ static void good() {
     gLedRed = 1;
 }
 
+// Switch bad (red) off again
+static void notBad() {
+    gLedRed = 1;
+}
+
 // Indicate bad (red)
 static void bad() {
     gLedRed = 0;
     gLedGreen = 1;
     gLedBlue = 1;
+    if (gpEventThread) {
+        gEventQueue.call_in(BAD_OFF_PERIOD_MS, notBad);
+    }
 }
 
 // Toggle green
@@ -774,7 +800,7 @@ bool startStreaming(AudioLocal *pAudioLocal)
     int retValue;
 
     // Start the per-second monitor tick and reset the diagnostics
-    gAudioSecondTicker.attach_us(callback(&audioMonitor), 1000000);
+    gSecondTicker.attach_us(callback(&audioMonitor), 1000000);
     memset(&gDiagnostics, 0, sizeof (gDiagnostics));
 
     if (!startAudioStreamingConnection(pAudioLocal)) {
@@ -831,7 +857,7 @@ void stopStreaming(AudioLocal *pAudioLocal)
 
     stopAudioStreamingConnection(pAudioLocal);
 
-    gAudioSecondTicker.detach();
+    gSecondTicker.detach();
 
     printf("Audio streaming stopped.\n");
 }
@@ -934,19 +960,6 @@ void deleteObject(IocM2mObjectId id)
     }
 }
 
-// Callback when mbed Cloud Client registers with the LWM2M server.
-static void cloudClientRegisteredCallback() {
-    flash();
-    good();
-    printf("Mbed Cloud Client is registered, press the user button to exit.\n");
-}
-
-// Callback when mbed Cloud Client deregisters from the LWM2M server.
-static void cloudClientDeregisteredCallback() {
-    flash();
-    printf("Mbed Cloud Client deregistered.\n");
-}
-
 // Callback that sets the power switch via the IocM2mPowerControl
 // object.
 static void setPowerControl(bool value)
@@ -1036,6 +1049,11 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
         stopStreaming(&gAudioLocalActive);
         gAudioLocalPending.streamingEnabled = false;
         gAudioLocalActive.streamingEnabled = false;
+        // Update the diagnostics straight away as they will have been
+        // modified during the streaming session
+        if (gObjectList[IOC_M2M_DIAGNOSTICS].updateObservableResources) {
+            gObjectList[IOC_M2M_DIAGNOSTICS].updateObservableResources();
+        }
     }
 }
 
@@ -1086,6 +1104,24 @@ static void objectUpdate()
     }
 }
 
+// Callback when mbed Cloud Client registers with the LWM2M server.
+static void cloudClientRegisteredCallback() {
+    flash();
+    good();
+    printf("Mbed Cloud Client is registered, press the user button to exit.\n");
+
+    // Start the observable resource update timer
+    gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS, objectUpdate);
+}
+
+// Callback when mbed Cloud Client deregisters from the LWM2M server.
+static void cloudClientDeregisteredCallback() {
+    flash();
+    printf("Mbed Cloud Client deregistered.\n");
+
+    gEventQueue.cancel(gObjectUpdateEvent);
+}
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: MISC
  * -------------------------------------------------------------- */
@@ -1094,6 +1130,17 @@ static void objectUpdate()
 static void buttonCallback()
 {
     gUserButtonPressed = true;
+}
+
+// Normally we feed the watchdog in task-context
+// so that we can be sure that tasks are alive.
+// However, sometimes it is not possible to do that
+// (e.g. while waiting for cellular to register)
+// and so in those circumstances this callback
+// can be called on a ticker.
+static void watchdogFeedCallback()
+{
+    HAL_IWDG_Refresh(&gWdt);
 }
 
 /* ----------------------------------------------------------------
@@ -1110,10 +1157,20 @@ static bool init()
     int x = 0;
     int y = 0;
 
+    printf("Starting watchdog timer (%d seconds)...\n", WATCHDOG_WAKEUP_MS / 1000);
+    if (HAL_IWDG_Init(&gWdt) != HAL_OK) {
+        bad();
+        printf("WARNING: unable to initialise watchdog, it is NOT running.\n");
+    }
+
     flash();
     printf("Starting logging...\n");
     initLog();
     LOG(EVENT_LOG_START, 0);
+
+    // Start the event queue in the event thread
+    gpEventThread = new Thread();
+    gpEventThread->start(callback(&gEventQueue, &EventQueue::dispatch_forever));
 
     flash();
     printf("Setting up data storage...\n");
@@ -1172,6 +1229,7 @@ static bool init()
         // once and, if the credentials are bad, we reset the Mbed Cloud
         // Client storage and try again one more time.
         for (x = 0; (x < 2) && !cloudClientConfigGood; x++) {
+            HAL_IWDG_Refresh(&gWdt);
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
             flash();
             printf("Starting Mbed Cloud Client developer flow...\n");
@@ -1279,6 +1337,7 @@ static bool init()
         return false;
     }
 
+    HAL_IWDG_Refresh(&gWdt);
     flash();
     printf("Initialising modem...\n");
     gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
@@ -1289,13 +1348,18 @@ static bool init()
         return false;
     }
 
+    // Run a ticker to feed the watchdog while we wait for registration
+    gSecondTicker.attach_us(callback(&watchdogFeedCallback), 1000000);
+
     flash();
     printf("Please wait up to 180 seconds to connect to the cellular packet network...\n");
     if (gpCellular->connect() != NSAPI_ERROR_OK) {
+        gSecondTicker.detach();
         bad();
         printf("Unable to connect to the cellular packet network.\n");
         return false;
     }
+    gSecondTicker.detach();
 
     flash();
     printf("Connecting to LWM2M server...\n");
@@ -1308,11 +1372,6 @@ static bool init()
         // !!! SUCCESS !!!
     }
 
-    // Start the event queue in the event thread
-    gpEventThread = new Thread();
-    gpEventThread->start(callback(&gEventQueue, &EventQueue::dispatch_forever));
-    gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_SECONDS * 1000, objectUpdate);
-
     return true;
 }
 
@@ -1320,12 +1379,7 @@ static bool init()
 // Anything that was set up in init() should be cleared here.
 static void deinit()
 {
-    // Stop the event queue
-    gpEventThread->terminate();
-    gpEventThread->join();
-    delete gpEventThread;
-    gpEventThread = NULL;
-
+    HAL_IWDG_Refresh(&gWdt);
     if (gAudioLocalActive.streamingEnabled) {
         flash();
         printf("Stopping streaming...\n");
@@ -1358,6 +1412,7 @@ static void deinit()
     }
 
     if (gpCellular != NULL) {
+        HAL_IWDG_Refresh(&gWdt);
         flash();
         printf("Disconnecting from the cellular packet network...\n");
         gpCellular->disconnect();
@@ -1379,6 +1434,13 @@ static void deinit()
         gpUserButton = NULL;
     }
 
+    // Stop the event queue
+    gpEventThread->terminate();
+    gpEventThread->join();
+    delete gpEventThread;
+    gpEventThread = NULL;
+
+    HAL_IWDG_Refresh(&gWdt);
     flash();
     printf("Printing the log...\n");
     LOG(EVENT_LOG_STOP, 0);
@@ -1425,7 +1487,8 @@ int main() {
     if (init()) {
 
         for (int x = 0; !gUserButtonPressed; x++) {
-            Thread::yield();
+            HAL_IWDG_Refresh(&gWdt);
+            wait_ms(BUTTON_CHECK_INTERVAL_MS);
         }
 
         // Shut everything down
