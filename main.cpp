@@ -22,6 +22,7 @@
 #include "urtp.h"
 #include "ioc_log.h"
 #include "stm32f4xx_hal_iwdg.h"
+#include "battery_gauge_bq27441.h"
 #ifdef MBED_HEAP_STATS_ENABLED
 #include "mbed_stats.h"
 #endif
@@ -174,6 +175,13 @@ typedef union {
     UDPSocket *pUdpSock;
 } SocketPointerUnion;
 
+// Local version of temperature data.
+typedef struct {
+    int32_t nowC;
+    int32_t minC;
+    int32_t maxC;
+} TemperatureLocal;
+
 // Local version of audio parameters.
 typedef struct {
     bool streamingEnabled;
@@ -235,8 +243,10 @@ static IocM2mObject gObjectList[MAX_NUM_IOC_M2M_OBJECTS];
 // Data storage.
 static bool gPowerOnNotOff = false;
 static IocM2mLocation::Location gLocationData;
-static IocM2mTemperature::Temperature gTemperatureData;
 static IocM2mConfig::Config gConfigData;
+
+// Temperature data
+static TemperatureLocal gTemperatureLocal = {0};
 
 // The event loop and event queue.
 static Thread *gpEventThread = NULL;
@@ -290,6 +300,10 @@ static volatile bool gUserButtonPressed = false;
 static IWDG_HandleTypeDef gWdt = {IWDG,
                                   {IWDG_PRESCALER_256, 0x0FFF}};
 
+// Battery monitoring.
+static I2C *gpI2C = NULL;
+static BatteryGaugeBq27441 *gpBatteryGauge = NULL;
+
 // LEDs for user feedback and diagnostics.
 static DigitalOut gLedRed(LED1, 1);
 static DigitalOut gLedGreen(LED2, 1);
@@ -298,6 +312,7 @@ static DigitalOut gLedBlue(LED3, 1);
 // For diagnostics.
 static DiagnosticsLocal gDiagnostics = {0};
 static Ticker gSecondTicker;
+static int gStartTime = 0;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: DIAGNOSTICS
@@ -986,9 +1001,19 @@ static bool getLocationData(IocM2mLocation::Location *data)
 // object.
 static bool getTemperatureData(IocM2mTemperature::Temperature *data)
 {
-    // TODO get it
+    if (gpBatteryGauge) {
+        gpBatteryGauge->getTemperature(&gTemperatureLocal.nowC);
+        if (gTemperatureLocal.nowC < gTemperatureLocal.minC) {
+            gTemperatureLocal.minC = gTemperatureLocal.nowC;
+        }
+        if (gTemperatureLocal.nowC > gTemperatureLocal.maxC) {
+            gTemperatureLocal.maxC = gTemperatureLocal.nowC;
+        }
+    }
 
-    *data = gTemperatureData;
+    data->temperature = (float) gTemperatureLocal.nowC;
+    data->minTemperature = (float) gTemperatureLocal.minC;
+    data->maxTemperature = (float) gTemperatureLocal.maxC;
 
     return true;
 }
@@ -999,8 +1024,8 @@ static void executeResetTemperatureMinMax()
 {
     printf("Received min/max temperature reset.\n");
 
-    gTemperatureData.maxTemperature = gTemperatureData.temperature;
-    gTemperatureData.minTemperature = gTemperatureData.temperature;
+    gTemperatureLocal.minC = gTemperatureLocal.nowC;
+    gTemperatureLocal.maxC = gTemperatureLocal.nowC;
 }
 
 // Callback that sets the configuration data via the IocM2mConfig
@@ -1066,7 +1091,7 @@ static bool getStreamingEnabled(bool *streamingEnabled)
 }
 
 // Convert a local audio data structure to the IocM2mAudio one.
-static IocM2mAudio::Audio *convertAudioLocalToM2m (const AudioLocal *pLocal, IocM2mAudio::Audio *pM2m)
+static IocM2mAudio::Audio *convertAudioLocalToM2m (IocM2mAudio::Audio *pM2m, const AudioLocal *pLocal)
 {
     pM2m->streamingEnabled = pLocal->streamingEnabled;
     pM2m->duration = (float) pLocal->duration;
@@ -1080,7 +1105,11 @@ static IocM2mAudio::Audio *convertAudioLocalToM2m (const AudioLocal *pLocal, Ioc
 // Callback that gets diagnostic data for the IocM2mDiagnostics object.
 static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 {
-    data->upTime = 0; // TODO
+    if (gStartTime > 0) {
+        data->upTime = time(NULL) - gStartTime;
+    } else {
+        data->upTime = 0;
+    }
     data->worstCaseSendDuration = (float) gDiagnostics.worstCaseAudioDatagramSendDuration / 1000000;
     data->averageSendDuration = (float) (gDiagnostics.averageAudioDatagramSendDuration /
                                          gDiagnostics.numAudioDatagrams) / 1000000;
@@ -1112,6 +1141,10 @@ static void cloudClientRegisteredCallback() {
 
     // Start the observable resource update timer
     gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS, objectUpdate);
+
+    // The registration process will update system time so
+    // read the start time now.
+    gStartTime = time(NULL);
 }
 
 // Callback when mbed Cloud Client deregisters from the LWM2M server.
@@ -1175,7 +1208,6 @@ static bool init()
     flash();
     printf("Setting up data storage...\n");
     memset(&gLocationData, 0, sizeof (gLocationData));
-    memset(&gTemperatureData, 0, sizeof (gTemperatureData));
 
     gConfigData.initWakeUpTickPeriod = CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD;
     gConfigData.initWakeUpCount = CONFIG_DEFAULT_INIT_WAKEUP_COUNT;
@@ -1195,6 +1227,28 @@ static bool init()
     printf("Creating user button...\n");
     gpUserButton = new InterruptIn(SW0);
     gpUserButton->rise(&buttonCallback);
+
+    flash();
+    printf("Starting I2C and battery gauge...\n");
+    gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
+    gpBatteryGauge = new BatteryGaugeBq27441();
+    if (gpBatteryGauge->init(gpI2C)) {
+        printf("Battery gauge initialised, setting it up...\n");
+        gpBatteryGauge->disableBatteryDetect();
+        gpBatteryGauge->enableGauge();
+        // Reset the temperature min/max readings which are read from the gauge
+        if (gpBatteryGauge->getTemperature(&gTemperatureLocal.nowC)) {
+            gTemperatureLocal.minC = gTemperatureLocal.nowC;
+            gTemperatureLocal.maxC = gTemperatureLocal.nowC;
+        }
+    } else {
+        bad();
+        printf ("WARNING: unable to initialise battery gauge (maybe the battery is not connected?).\n");
+        delete gpBatteryGauge;
+        gpBatteryGauge = NULL;
+        delete gpI2C;
+        gpI2C = NULL;
+    }
 
     flash();
     printf("Starting SD card...\n");
@@ -1322,7 +1376,7 @@ static bool init()
     IocM2mAudio::Audio *pTempStore = new IocM2mAudio::Audio;
     addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData,
                                              getStreamingEnabled,
-                                             convertAudioLocalToM2m(&gAudioLocalPending, pTempStore),
+                                             convertAudioLocalToM2m(pTempStore, &gAudioLocalPending),
                                              MBED_CONF_APP_OBJECT_DEBUG_ON));
     delete pTempStore;
     addObject(IOC_M2M_DIAGNOSTICS, new IocM2mDiagnostics(getDiagnosticsData,
@@ -1427,24 +1481,40 @@ static void deinit()
     printf("Closing SD card...\n");
     sd.deinit();
 
-    flash();
-    printf("Removing user button...\n");
     if (gpUserButton != NULL) {
+        flash();
+        printf("Removing user button...\n");
         delete gpUserButton;
         gpUserButton = NULL;
     }
 
+    if (gpBatteryGauge && gpI2C) {
+        flash();
+        printf("Stopping battery gauge and I2C...");
+        gpBatteryGauge->disableGauge();
+        delete gpBatteryGauge;
+        gpBatteryGauge = NULL;
+        delete gpI2C;
+        gpI2C = NULL;
+    }
+
     // Stop the event queue
-    gpEventThread->terminate();
-    gpEventThread->join();
-    delete gpEventThread;
-    gpEventThread = NULL;
+    if (gpEventThread) {
+        gpEventThread->terminate();
+        gpEventThread->join();
+        delete gpEventThread;
+        gpEventThread = NULL;
+    }
 
     HAL_IWDG_Refresh(&gWdt);
     flash();
     printf("Printing the log...\n");
     LOG(EVENT_LOG_STOP, 0);
     printLog();
+
+    if (gStartTime > 0) {
+        printf("Up for %ld second(s).\n", time(NULL) - gStartTime);
+    }
 
     if (gDiagnostics.numAudioDatagrams > 0) {
         printf("Stats:\n");
