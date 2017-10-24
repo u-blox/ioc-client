@@ -1366,7 +1366,18 @@ static void objectUpdate()
             }
         }
         if (gpBatteryCharger) {
+            // Make sure we are lined up with the USB power state
+            if (gpBatteryCharger->isExternalPowerPresent() &&
+                !gpCloudClientDm->existsDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB)) {
+                gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB);
+            } else if (!gpBatteryCharger->isExternalPowerPresent() &&
+                       gpCloudClientDm->existsDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB)) {
+                gpCloudClientDm->deleteDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB);
+            }
+
             fault = gpBatteryCharger->getChargerFaults();
+            // Don't care about battery charger watchdog timer
+            fault &= ~BatteryChargerBq24295::CHARGER_FAULT_WATCHDOG_EXPIRED;
             if (fault != BatteryChargerBq24295::CHARGER_FAULT_NONE) {
                 batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
             } else {
@@ -1375,19 +1386,11 @@ static void objectUpdate()
                 } else {
                     switch (gpBatteryCharger->getChargerState()) {
                         case BatteryChargerBq24295::CHARGER_STATE_DISABLED:
-                            // Charging must always be enabled, if not flag a fault
-                            batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
-                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_NO_EXTERNAL_POWER:
-                            // There must always be external power, if not flag a fault
-                            batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
-                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_NOT_CHARGING:
                             batteryStatus = CloudClientDm::BATTERY_STATUS_NORMAL;
                             break;
                         case BatteryChargerBq24295::CHARGER_STATE_PRECHARGE:
-                            batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
-                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_FAST_CHARGE:
                             batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
                             break;
@@ -1395,6 +1398,7 @@ static void objectUpdate()
                             batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING_COMPLETE;
                             break;
                         default:
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_UNKNOWN;
                             break;
                     }
                 }
@@ -1679,7 +1683,11 @@ static bool init()
             gpCloudClientDm->setDeviceObjectMemoryTotal(DEVICE_OBJECT_MEMORY_TOTAL) &&
             gpCloudClientDm->setDeviceObjectUtcOffset(DEVICE_OBJECT_UTC_OFFSET) &&
             gpCloudClientDm->setDeviceObjectTimezone(DEVICE_OBJECT_TIMEZONE)) {
-            dmObjectConfigGood = true;
+            if (gpBatteryCharger && gpBatteryCharger->isExternalPowerPresent()) {
+                dmObjectConfigGood = gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB);
+            } else {
+                dmObjectConfigGood = true;
+            }
         } else {
             cloudClientConfigGood = false;
             printf("Unable to configure the Device object.\n");
