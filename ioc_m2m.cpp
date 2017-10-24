@@ -394,8 +394,9 @@ void IocM2mAudio::updateObservableResources()
  * initialisation be done in the class definition).
  */
 const M2MObjectHelper::DefObject IocM2mDiagnostics::_defObject =
-    {0, "32771", 6,
+    {0, "32771", 7,
         -1, RESOURCE_NUMBER_UP_TIME, "on time", M2MResourceBase::INTEGER, true, M2MBase::GET_ALLOWED, NULL,
+        -1, RESOURCE_NUMBER_RESET_REASON, "reset reason", M2MResourceBase::INTEGER, true, M2MBase::GET_ALLOWED, NULL,
         RESOURCE_INSTANCE_WORST_CASE_SEND_DURATION, RESOURCE_NUMBER_WORST_CASE_SEND_DURATION, "duration", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, NULL,
         RESOURCE_INSTANCE_AVERAGE_SEND_DURATION, RESOURCE_NUMBER_AVERAGE_SEND_DURATION, "duration", M2MResourceBase::FLOAT, true, M2MBase::GET_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_MIN_NUM_DATAGRAMS_FREE, "down counter", M2MResourceBase::INTEGER, true, M2MBase::GET_ALLOWED, NULL,
@@ -434,6 +435,7 @@ void IocM2mDiagnostics::updateObservableResources()
         if (_getCallback(&data)) {
             // Set the values in the resources based on the new data
             MBED_ASSERT(setResourceValue(data.upTime, RESOURCE_NUMBER_UP_TIME));
+            MBED_ASSERT(setResourceValue(data.resetReason, RESOURCE_NUMBER_RESET_REASON));
             MBED_ASSERT(setResourceValue(data.worstCaseSendDuration,
                                          RESOURCE_NUMBER_WORST_CASE_SEND_DURATION,
                                          RESOURCE_INSTANCE_WORST_CASE_SEND_DURATION));

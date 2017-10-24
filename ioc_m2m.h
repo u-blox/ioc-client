@@ -479,6 +479,7 @@ public:
      */
     typedef struct {
         int64_t upTime;
+        int64_t resetReason;
         float worstCaseSendDuration;
         float averageSendDuration;
         int64_t minNumDatagramsFree;
@@ -508,6 +509,11 @@ protected:
      * resource.
      */
 #   define RESOURCE_NUMBER_UP_TIME "5852"
+
+    /** The resource number for resetReason, a Mode
+     * resource for the sake of anything better.
+     */
+#   define RESOURCE_NUMBER_RESET_REASON "5526"
 
     /** The resource number for worstCaseSendDuration,
      * a Duration resource.

@@ -23,6 +23,8 @@
 #include "ioc_log.h"
 #include "stm32f4xx_hal_iwdg.h"
 #include "battery_gauge_bq27441.h"
+#include "battery_charger_bq24295.h"
+#include "gnss.h"
 #ifdef MBED_HEAP_STATS_ENABLED
 #include "mbed_stats.h"
 #endif
@@ -115,6 +117,16 @@
 // The period at which observable resources are updated.
 #define OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD * 1000
 
+// The period at which GNSS location is read (if it is active).
+#define GNSS_UPDATE_PERIOD_MS (OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS / 2)
+
+// Timeout for comms with the GNSS chip,
+// should be less than GNSS_UPDATE_PERIOD_MS.
+#define GNSS_COMMS_TIMEOUT_MS 1000
+
+// The threshold for low battery warning.
+#define LOW_BATTERY_WARNING_PERCENTAGE 20
+
 // The period after which the "bad" status LED is tidied up.
 #define BAD_OFF_PERIOD_MS 10000
 
@@ -130,6 +142,17 @@
 /* ----------------------------------------------------------------
  * TYPES
  * -------------------------------------------------------------- */
+
+// The possible wake-up reasons.
+typedef enum {
+  RESET_REASON_UNKNOWN,
+  RESET_REASON_POWER_ON,
+  RESET_REASON_SOFTWARE,
+  RESET_REASON_WATCHDOG,
+  RESET_REASON_PIN,
+  RESET_REASON_LOW_POWER,
+  NUM_RESET_REASONS
+} ResetReason;
 
 // The identifiers for each LWM2M object.
 //
@@ -228,6 +251,9 @@ public:
 // in pal_plat_fileSystem.cpp.
 extern SDBlockDevice sd;
 
+// The reason we woke up
+static ResetReason gResetReason = RESET_REASON_UNKNOWN;
+
 // The network interface.
 static UbloxPPPCellularInterface *gpCellular = NULL;
 
@@ -242,7 +268,6 @@ static IocM2mObject gObjectList[MAX_NUM_IOC_M2M_OBJECTS];
 
 // Data storage.
 static bool gPowerOnNotOff = false;
-static IocM2mLocation::Location gLocationData;
 static IocM2mConfig::Config gConfigData;
 
 // Temperature data
@@ -303,6 +328,16 @@ static IWDG_HandleTypeDef gWdt = {IWDG,
 // Battery monitoring.
 static I2C *gpI2C = NULL;
 static BatteryGaugeBq27441 *gpBatteryGauge = NULL;
+static BatteryChargerBq24295 *gpBatteryCharger = NULL;
+
+// GNSS.
+static GnssSerial *gpGnss = NULL;
+static char gGnssBuffer[256];
+static bool gPendingGnssStop = false;
+
+/// For date conversion.
+static const char daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+static const char daysInMonthLeapYear[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
 // LEDs for user feedback and diagnostics.
 static DigitalOut gLedRed(LED1, 1);
@@ -808,6 +843,33 @@ static void stopI2s(I2S * pI2s)
  * STATIC FUNCTIONS: AUDIO CONTROL
  * -------------------------------------------------------------- */
 
+// Stop audio streaming.
+void stopStreaming(AudioLocal *pAudioLocal)
+{
+    stopI2s(&gMic);
+
+    // Wait for any on-going transmissions to complete
+    wait_ms(2000);
+
+    flash();
+    printf ("Stopping audio send task...\n");
+    gpSendTask->terminate();
+    gpSendTask->join();
+    delete gpSendTask;
+    gpSendTask = NULL;
+    gLedGreen = 0;  // Make sure the green LED stays on at
+                    // the end as it will have been
+                    // toggling throughout
+    printf ("Audio send task stopped.\n");
+
+    stopAudioStreamingConnection(pAudioLocal);
+
+    gSecondTicker.detach();
+
+    printf("Audio streaming stopped.\n");
+    pAudioLocal->streamingEnabled = false;
+}
+
 // Start audio streaming.
 // Note: here be multiple return statements.
 bool startStreaming(AudioLocal *pAudioLocal)
@@ -848,33 +910,180 @@ bool startStreaming(AudioLocal *pAudioLocal)
 
     printf("Now streaming audio.\n");
 
-    return true;
+    pAudioLocal->streamingEnabled = true;
+    if ((pAudioLocal->duration >= 0) && gpEventThread) {
+        printf("Audio streaming will stop in %d second(s).\n", pAudioLocal->duration);
+        gEventQueue.call_in(pAudioLocal->duration * 1000, &stopStreaming, pAudioLocal);
+    }
+
+    return pAudioLocal->streamingEnabled;
 }
 
-// Stop audio streaming.
-void stopStreaming(AudioLocal *pAudioLocal)
+/* ----------------------------------------------------------------
+ * STATIC FUNCTIONS: GNSS
+ * -------------------------------------------------------------- */
+
+/// Check if a year is a leap year.
+static bool isLeapYear(int year) {
+    bool leapYear = false;
+
+    if (year % 400 == 0) {
+        leapYear = true;
+    } else if (year % 4 == 0) {
+        leapYear = true;
+    }
+
+    return leapYear;
+}
+
+// Initialise the GNSS chip.
+static bool gnssInit(GnssSerial * pGnss)
 {
-    stopI2s(&gMic);
+    bool success = false;
+    Timer timer;
+    int length;
+    int returnCode;
 
-    // Wait for any on-going transmissions to complete
-    wait_ms(2000);
+    if (pGnss->init()) {
+        // See ublox7-V14_ReceiverDescrProtSpec section 35.14.3 (CFG-PRT)
+        // Switch off NMEA messages as they get in the way
+        memset(gGnssBuffer, sizeof (gGnssBuffer), 0);
+        gGnssBuffer[0] = 1; // The UART port
+        gGnssBuffer[7] = 0x10; // Set Reserved1 bit for compatibility reasons
+        gGnssBuffer[13] = 0x01; // UBX protocol only in
+        gGnssBuffer[15] = 0x01; // UBX protocol only out
+        // Send length is 20 bytes of payload + 6 bytes header + 2 bytes CRC
+        if (gpGnss->sendUbx(0x06, 0x00, gGnssBuffer, 20) == 28) {
+            timer.start();
+            while (!success && (timer.read_ms() < GNSS_COMMS_TIMEOUT_MS)) {
+                // Wait for the Ack
+                returnCode = gpGnss->getMessage(gGnssBuffer, sizeof(gGnssBuffer));
+                if ((returnCode != GnssSerial::WAIT) && (returnCode != GnssSerial::NOT_FOUND)) {
+                    length = LENGTH(returnCode);
+                    if (((PROTOCOL(returnCode) == GnssSerial::UBX) && (length >= 10))) {
+                        // Ack is  0xb5-62-05-00-02-00-msgclass-msgid-crcA-crcB
+                        // Nack is 0xb5-62-05-01-02-00-msgclass-msgid-crcA-crcB
+                        // (see ublox7-V14_ReceiverDescrProtSpec section 33)
+                        if ((gGnssBuffer[0] == 0xb5) &&
+                            (gGnssBuffer[1] == 0x62) &&
+                            (gGnssBuffer[2] == 0x05) &&
+                            (gGnssBuffer[3] == 0x00) &&
+                            (gGnssBuffer[4] == 0x02) &&
+                            (gGnssBuffer[5] == 0x00) &&
+                            (gGnssBuffer[6] == 0x06) &&
+                            (gGnssBuffer[7] == 0x00)) {
+                            success = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    flash();
-    printf ("Stopping audio send task...\n");
-    gpSendTask->terminate();
-    gpSendTask->join();
-    delete gpSendTask;
-    gpSendTask = NULL;
-    gLedGreen = 0;  // Make sure the green LED stays on at
-                    // the end as it will have been
-                    // toggling throughout
-    printf ("Audio send task stopped.\n");
+    return success;
+}
 
-    stopAudioStreamingConnection(pAudioLocal);
+/// Derive an unsigned int from a pointer to a
+// little-endian unsigned int in memory.
+static unsigned int littleEndianUInt(char *pByte) {
+    unsigned int value;
 
-    gSecondTicker.detach();
+    value = *pByte;
+    value += ((unsigned int) *(pByte + 1)) << 8;
+    value += ((unsigned int) *(pByte + 2)) << 16;
+    value += ((unsigned int) *(pByte + 3)) << 24;
 
-    printf("Audio streaming stopped.\n");
+    return value;
+}
+
+// Callback to update GNSS.
+static bool gnssUpdate(IocM2mLocation::Location *location)
+{
+    bool response = false;
+    bool success = false;
+    Timer timer;
+    int length;
+    int returnCode;
+    int year;
+    int months;
+    int gpsTime = 0;
+
+    if (gpGnss) {
+        // See ublox7-V14_ReceiverDescrProtSpec section 39.7 (NAV-PVT)
+        // Send length is 0 bytes of payload + 6 bytes header + 2 bytes CRC
+        if (gpGnss->sendUbx(0x01, 0x07) == 8) {
+            timer.start();
+            while (!response && (timer.read_ms() < GNSS_COMMS_TIMEOUT_MS)) {
+                returnCode = gpGnss->getMessage(gGnssBuffer, sizeof(gGnssBuffer));
+                if ((returnCode != GnssSerial::WAIT) && (returnCode != GnssSerial::NOT_FOUND)) {
+                    length = LENGTH(returnCode);
+                    if ((PROTOCOL(returnCode) == GnssSerial::UBX) && (length >= 84)) {
+                        response = true;
+                        // Note in what follows that the offsets include 6 bytes of header,
+                        // consisting of 0xb5-62-msgclass-msgid-length1-length2.
+
+                        // The time/date is contained at byte offsets as follows:
+                        //
+                        // 10 - two bytes of year, little-endian (UTC)
+                        // 12 - month, range 1..12 (UTC)
+                        // 13 - day, range 1..31 (UTC)
+                        // 14 - hour, range 0..23 (UTC)
+                        // 15 - min, range 0..59 (UTC)
+                        // 16 - sec, range 0..60 (UTC)
+                        // 17 - validity (0x03 or higher means valid)
+                        if ((gGnssBuffer[17] & 0x03) == 0x03) {
+                            // Year 1999-2099, so need to adjust to get year since 1970
+                            year = ((int) (gGnssBuffer[10])) + ((int) (gGnssBuffer[11]) << 8) - 1999 + 29;
+                            // Month (1 to 12), so take away 1 to make it zero-based
+                            months = gGnssBuffer[12] - 1;
+                            months += year * 12;
+                            // Work out the number of seconds due to the year/month count
+                            for (int x = 0; x < months; x++) {
+                                if (isLeapYear ((x / 12) + 1970)) {
+                                    gpsTime += daysInMonthLeapYear[x % 12] * 3600 * 24;
+                                } else {
+                                    gpsTime += daysInMonth[x % 12] * 3600 * 24;
+                                }
+                            }
+                            // Day (1 to 31)
+                            gpsTime += ((int) gGnssBuffer[13] - 1) * 3600 * 24;
+                            // Hour (0 to 23)
+                            gpsTime += ((int) gGnssBuffer[14]) * 3600;
+                            // Minute (0 to 59)
+                            gpsTime += ((int) gGnssBuffer[15]) * 60;
+                            // Second (0 to 60)
+                            gpsTime += gGnssBuffer[16];
+
+                            location->timestampUnix = gpsTime;
+                        }
+
+                        // The fix information is contained at byte offsets as follows:
+                        //
+                        // 26 - fix type, where 0x02 (2D) or 0x03 (3D) are good enough
+                        // 27 - fix status flag, where bit 0 must be set for gnssFixOK
+                        // 30 - 4 bytes of longitude, little-endian, in degrees * 10000000
+                        // 34 - 4 bytes of latitude, little-endian, in degrees * 10000000
+                        // 42 - 4 bytes of height above sea level, little-endian, millimetres
+                        // 46 - 4 bytes of horizontal accuracy estimate, little-endian, millimetres
+                        // 66 - 4 bytes of speed, little-endian, millimetres/second
+                        if (((gGnssBuffer[26] == 0x03) || (gGnssBuffer[26] == 0x02)) &&
+                            ((gGnssBuffer[27] & 0x01) == 0x01)) {
+                            location->longitudeDegrees = ((float) littleEndianUInt(&(gGnssBuffer[30]))) / 10000000;
+                            location->latitudeDegrees = ((float) littleEndianUInt(&(gGnssBuffer[34]))) / 10000000;
+                            location->radiusMetres = ((float) littleEndianUInt(&(gGnssBuffer[46]))) / 1000;
+                            location->speedMPS = ((float) littleEndianUInt(&(gGnssBuffer[66]))) / 1000;
+                            if (gGnssBuffer[26] == 0x03) {
+                                location->altitudeMetres = ((float) littleEndianUInt(&(gGnssBuffer[42]))) / 1000;
+                            }
+                            success = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return success;
 }
 
 /* ----------------------------------------------------------------
@@ -990,17 +1199,15 @@ static void setPowerControl(bool value)
 // object.
 static bool getLocationData(IocM2mLocation::Location *data)
 {
-    // TODO get it
-
-    *data = gLocationData;
-
-    return true;
+    return gnssUpdate(data);
 }
 
 // Callback that retrieves temperature data for the IocM2mTemperature
 // object.
 static bool getTemperatureData(IocM2mTemperature::Temperature *data)
 {
+    bool success = false;
+
     if (gpBatteryGauge) {
         gpBatteryGauge->getTemperature(&gTemperatureLocal.nowC);
         if (gTemperatureLocal.nowC < gTemperatureLocal.minC) {
@@ -1009,13 +1216,14 @@ static bool getTemperatureData(IocM2mTemperature::Temperature *data)
         if (gTemperatureLocal.nowC > gTemperatureLocal.maxC) {
             gTemperatureLocal.maxC = gTemperatureLocal.nowC;
         }
+
+        data->temperature = (float) gTemperatureLocal.nowC;
+        data->minTemperature = (float) gTemperatureLocal.minC;
+        data->maxTemperature = (float) gTemperatureLocal.maxC;
+        success = true;
     }
 
-    data->temperature = (float) gTemperatureLocal.nowC;
-    data->minTemperature = (float) gTemperatureLocal.minC;
-    data->maxTemperature = (float) gTemperatureLocal.maxC;
-
-    return true;
+    return success;
 }
 
 // Callback that executes a reset of the min/max temperature range
@@ -1040,9 +1248,21 @@ static void setConfigData(const IocM2mConfig::Config *data)
     printf("  batteryWakeUpTickPeriod %f.\n", data->batteryWakeUpTickPeriod);
     printf("  GNSS enable %d.\n", data->gnssEnable);
 
-    gConfigData = *data;
+    /// Handle GNSS configuration changes
+    if (!gpGnss && data->gnssEnable) {
+        gPendingGnssStop = false;
+        gpGnss = new GnssSerial();
+        if (!gpGnss->init()) {
+            delete gpGnss;
+            gpGnss = NULL;
+        }
+    } else if (gpGnss && !data->gnssEnable) {
+        gPendingGnssStop = true;
+    }
 
-    // TODO act on it
+    // TODO act on the rest of it
+
+    gConfigData = *data;
 }
 
 // Callback that sets the configuration data via the IocM2mAudio
@@ -1069,11 +1289,9 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
         // unless it is switched off and on again
         gAudioLocalActive = gAudioLocalPending;
         gAudioLocalPending.streamingEnabled = startStreaming(&gAudioLocalActive);
-        gAudioLocalActive.streamingEnabled = gAudioLocalPending.streamingEnabled;
     } else if (!m2mAudio->streamingEnabled && streamingWasEnabled) {
         stopStreaming(&gAudioLocalActive);
-        gAudioLocalPending.streamingEnabled = false;
-        gAudioLocalActive.streamingEnabled = false;
+        gAudioLocalPending.streamingEnabled = gAudioLocalActive.streamingEnabled;
         // Update the diagnostics straight away as they will have been
         // modified during the streaming session
         if (gObjectList[IOC_M2M_DIAGNOSTICS].updateObservableResources) {
@@ -1085,7 +1303,7 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
 // Callback that retrieves the state of streamingEnabled
 static bool getStreamingEnabled(bool *streamingEnabled)
 {
-    *streamingEnabled = gAudioLocalPending.streamingEnabled;
+    *streamingEnabled = gAudioLocalActive.streamingEnabled;
 
     return true;
 }
@@ -1110,6 +1328,7 @@ static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
     } else {
         data->upTime = 0;
     }
+    data->resetReason = gResetReason;
     data->worstCaseSendDuration = (float) gDiagnostics.worstCaseAudioDatagramSendDuration / 1000000;
     data->averageSendDuration = (float) (gDiagnostics.averageAudioDatagramSendDuration /
                                          gDiagnostics.numAudioDatagrams) / 1000000;
@@ -1124,7 +1343,77 @@ static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data)
 // Callback to update the observable values in all of the LWM2M objects.
 static void objectUpdate()
 {
+    int32_t voltageMV;
+    int32_t currentMA;
+    int32_t batteryLevelPercent;
+    CloudClientDm::BatteryStatus batteryStatus = CloudClientDm::BATTERY_STATUS_UNKNOWN;
+    char fault;
+
+    // First do the observable resources for the Device object
     flash();
+    if (gpCloudClientDm) {
+        if (gpBatteryGauge && gpBatteryGauge->isBatteryDetected()) {
+            if (gpBatteryGauge->getVoltage(&voltageMV)) {
+                gpCloudClientDm->setDeviceObjectVoltage(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY,
+                                                        voltageMV);
+            }
+            if (gpBatteryGauge->getCurrent(&currentMA)) {
+                gpCloudClientDm->setDeviceObjectCurrent(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY,
+                                                        currentMA);
+            }
+            if (gpBatteryGauge->getRemainingPercentage(&batteryLevelPercent)) {
+                gpCloudClientDm->setDeviceObjectBatteryLevel(batteryLevelPercent);
+            }
+        }
+        if (gpBatteryCharger) {
+            fault = gpBatteryCharger->getChargerFaults();
+            if (fault != BatteryChargerBq24295::CHARGER_FAULT_NONE) {
+                batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
+            } else {
+                if (batteryLevelPercent < LOW_BATTERY_WARNING_PERCENTAGE) {
+                    batteryStatus = CloudClientDm::BATTERY_STATUS_LOW_BATTERY;
+                } else {
+                    switch (gpBatteryCharger->getChargerState()) {
+                        case BatteryChargerBq24295::CHARGER_STATE_DISABLED:
+                            // Charging must always be enabled, if not flag a fault
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
+                            break;
+                        case BatteryChargerBq24295::CHARGER_STATE_NO_EXTERNAL_POWER:
+                            // There must always be external power, if not flag a fault
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
+                            break;
+                        case BatteryChargerBq24295::CHARGER_STATE_NOT_CHARGING:
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_NORMAL;
+                            break;
+                        case BatteryChargerBq24295::CHARGER_STATE_PRECHARGE:
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
+                            break;
+                        case BatteryChargerBq24295::CHARGER_STATE_FAST_CHARGE:
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
+                            break;
+                        case BatteryChargerBq24295::CHARGER_STATE_COMPLETE:
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING_COMPLETE;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+        }
+        gpCloudClientDm->setDeviceObjectBatteryStatus(batteryStatus);
+    }
+
+    // Check if there's been a request to switch off GNSS before
+    // we go observing it.
+    if (gPendingGnssStop) {
+        if (gpGnss) {
+            delete gpGnss;
+            gpGnss = NULL;
+        }
+        gPendingGnssStop = false;
+    }
+
+    // Now do all the other observable resources
     for (unsigned int x = 0; x < sizeof (gObjectList) /
                                  sizeof (gObjectList[0]); x++) {
         if (gObjectList[x].updateObservableResources) {
@@ -1134,7 +1423,8 @@ static void objectUpdate()
 }
 
 // Callback when mbed Cloud Client registers with the LWM2M server.
-static void cloudClientRegisteredCallback() {
+static void cloudClientRegisteredCallback()
+{
     flash();
     good();
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
@@ -1148,11 +1438,13 @@ static void cloudClientRegisteredCallback() {
 }
 
 // Callback when mbed Cloud Client deregisters from the LWM2M server.
-static void cloudClientDeregisteredCallback() {
+static void cloudClientDeregisteredCallback()
+{
     flash();
     printf("Mbed Cloud Client deregistered.\n");
 
     gEventQueue.cancel(gObjectUpdateEvent);
+    gObjectUpdateEvent = -1;
 }
 
 /* ----------------------------------------------------------------
@@ -1180,6 +1472,28 @@ static void watchdogFeedCallback()
  * STATIC FUNCTIONS: INITIALISATION AND DEINITIALISATION
  * -------------------------------------------------------------- */
 
+// Find out what woke us up
+ResetReason getResetReason()
+{
+    ResetReason reason = RESET_REASON_UNKNOWN;
+
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)) {
+        reason = RESET_REASON_POWER_ON;
+    } else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) {
+        reason = RESET_REASON_SOFTWARE;
+    } else if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+        reason = RESET_REASON_WATCHDOG;
+    } else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) {
+        reason = RESET_REASON_PIN;
+    } else if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST)) {
+        reason = RESET_REASON_LOW_POWER;
+    }
+
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+
+    return reason;
+}
+
 // Initialise everything.  If you add anything here, be sure to
 // add the opposite to deinit().
 // Note: here be multiple return statements.
@@ -1199,7 +1513,7 @@ static bool init()
     flash();
     printf("Starting logging...\n");
     initLog();
-    LOG(EVENT_LOG_START, 0);
+    LOG(EVENT_LOG_START, gResetReason);
 
     // Start the event queue in the event thread
     gpEventThread = new Thread();
@@ -1207,8 +1521,6 @@ static bool init()
 
     flash();
     printf("Setting up data storage...\n");
-    memset(&gLocationData, 0, sizeof (gLocationData));
-
     gConfigData.initWakeUpTickPeriod = CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD;
     gConfigData.initWakeUpCount = CONFIG_DEFAULT_INIT_WAKEUP_COUNT;
     gConfigData.normalWakeUpTickPeriod = CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD;
@@ -1229,7 +1541,7 @@ static bool init()
     gpUserButton->rise(&buttonCallback);
 
     flash();
-    printf("Starting I2C and battery gauge...\n");
+    printf("Starting I2C, battery gauge and battery charger...\n");
     gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
     gpBatteryGauge = new BatteryGaugeBq27441();
     if (gpBatteryGauge->init(gpI2C)) {
@@ -1246,8 +1558,34 @@ static bool init()
         printf ("WARNING: unable to initialise battery gauge (maybe the battery is not connected?).\n");
         delete gpBatteryGauge;
         gpBatteryGauge = NULL;
+    }
+    gpBatteryCharger = new BatteryChargerBq24295();
+    if (gpBatteryCharger->init(gpI2C)) {
+        printf("Battery charger initialised, setting it up...\n");
+        gpBatteryCharger->enableCharging();
+    } else {
+        bad();
+        printf ("WARNING: unable to initialise battery charger.\n");
+        delete gpBatteryCharger;
+        gpBatteryCharger = NULL;
+    }
+
+    // Only need I2C for battery stuff, so if neither work just delete it
+    if (!gpBatteryGauge && !gpBatteryCharger) {
         delete gpI2C;
         gpI2C = NULL;
+    }
+
+    if (CONFIG_DEFAULT_GNSS_ENABLE) {
+        flash();
+        printf("Starting GNSS...\n");
+        gpGnss = new GnssSerial();
+        if (!gnssInit(gpGnss)) {
+            bad();
+            printf ("WARNING: unable to initialise GNSS.\n");
+            delete gpGnss;
+            gpGnss = NULL;
+        }
     }
 
     flash();
@@ -1438,8 +1776,7 @@ static void deinit()
         flash();
         printf("Stopping streaming...\n");
         stopStreaming(&gAudioLocalActive);
-        gAudioLocalPending.streamingEnabled = false;
-        gAudioLocalActive.streamingEnabled = false;
+        gAudioLocalPending.streamingEnabled = gAudioLocalActive.streamingEnabled;
     }
 
     if (gpCloudClientDm != NULL) {
@@ -1488,12 +1825,31 @@ static void deinit()
         gpUserButton = NULL;
     }
 
-    if (gpBatteryGauge && gpI2C) {
+    if (gpGnss) {
         flash();
-        printf("Stopping battery gauge and I2C...");
+        printf ("Stopping GNSS...\n");
+        delete gpGnss;
+        gpGnss = NULL;
+    }
+
+    if (gpBatteryGauge) {
+        flash();
+        printf("Stopping battery gauge...");
         gpBatteryGauge->disableGauge();
         delete gpBatteryGauge;
         gpBatteryGauge = NULL;
+    }
+
+    if (gpBatteryCharger) {
+        flash();
+        printf("Stopping battery charger...");
+        delete gpBatteryCharger;
+        gpBatteryCharger = NULL;
+    }
+
+    if (gpI2C) {
+        flash();
+        printf("Stopping I2C...");
         delete gpI2C;
         gpI2C = NULL;
     }
@@ -1536,6 +1892,8 @@ static void deinit()
  * -------------------------------------------------------------- */
 
 int main() {
+
+    gResetReason = getResetReason();
 
 #if defined(MBED_CONF_MBED_TRACE_ENABLE) && MBED_CONF_MBED_TRACE_ENABLE
     // NOTE: the mutex causes output to stop under heavy load, hence
