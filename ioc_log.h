@@ -116,7 +116,7 @@ typedef enum {
 
 // An entry in the RAM log
 typedef struct {
-    int timestamp;
+    unsigned int timestamp;
     LogEvent event;
     int parameter;
 } LogEntry;
