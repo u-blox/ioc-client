@@ -221,11 +221,11 @@ void IocM2mTemperature::executeFunction (void *parameter)
  */
 const M2MObjectHelper::DefObject IocM2mConfig::_defObject =
     {0, "32769", 6,
-        RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
-        RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_COUNT, "counter", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
-        RESOURCE_INSTANCE_NORMAL_WAKE_UP, RESOURCE_NUMBER_NORMAL_WAKE_UP_TICK_PERIOD, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
-        RESOURCE_INSTANCE_NORMAL_WAKE_UP, RESOURCE_NUMBER_NORMAL_WAKE_UP_COUNT, "counter", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
-        RESOURCE_INSTANCE_BATTERY_WAKE_UP, RESOURCE_NUMBER_BATTERY_WAKE_UP_TICK_PERIOD, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_PERIOD, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        RESOURCE_INSTANCE_INIT_WAKE_UP, RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_MODULO, "modulo", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_1, RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_1, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_2, RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_2, "seconds", M2MResourceBase::FLOAT, false, M2MBase::GET_PUT_ALLOWED, NULL,
+        RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_MODULO, RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_MODULO, "modulo", M2MResourceBase::INTEGER, false, M2MBase::GET_PUT_ALLOWED, NULL,
         -1, RESOURCE_NUMBER_GNSS_ENABLE, "boolean", M2MResourceBase::BOOLEAN, false, M2MBase::GET_PUT_ALLOWED, NULL
     };
 
@@ -244,16 +244,16 @@ IocM2mConfig::IocM2mConfig(Callback<void(const Config *)> setCallback,
     MBED_ASSERT(makeObject());
 
     // Set the initial values
-    MBED_ASSERT(setResourceValue(initialValues->initWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_INIT_WAKE_UP));
-    MBED_ASSERT(setResourceValue(initialValues->initWakeUpCount,
-                                 RESOURCE_NUMBER_INIT_WAKE_UP_COUNT, RESOURCE_INSTANCE_INIT_WAKE_UP));
-    MBED_ASSERT(setResourceValue(initialValues->normalWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_NORMAL_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_NORMAL_WAKE_UP));
-    MBED_ASSERT(setResourceValue(initialValues->normalWakeUpCount,
-                                 RESOURCE_NUMBER_NORMAL_WAKE_UP_COUNT, RESOURCE_INSTANCE_NORMAL_WAKE_UP));
-    MBED_ASSERT(setResourceValue(initialValues->batteryWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_BATTERY_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_BATTERY_WAKE_UP));
+    MBED_ASSERT(setResourceValue(initialValues->initWakeUpTickCounterPeriod,
+                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_PERIOD, RESOURCE_INSTANCE_INIT_WAKE_UP));
+    MBED_ASSERT(setResourceValue(initialValues->initWakeUpTickCounterModulo,
+                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_MODULO, RESOURCE_INSTANCE_INIT_WAKE_UP));
+    MBED_ASSERT(setResourceValue(initialValues->readyWakeUpTickCounterPeriod1,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_1, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_1));
+    MBED_ASSERT(setResourceValue(initialValues->readyWakeUpTickCounterPeriod2,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_2, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_2));
+    MBED_ASSERT(setResourceValue(initialValues->readyWakeUpTickCounterModulo,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_MODULO, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_MODULO));
     MBED_ASSERT(setResourceValue(initialValues->gnssEnable, RESOURCE_NUMBER_GNSS_ENABLE));
 
     printfLog("IocM2mConfig: object initialised.\n");
@@ -271,25 +271,25 @@ void IocM2mConfig::objectUpdated(const char *resourceName)
 
     printfLog("IocM2mConfig: resource \"%s\" has been updated.\n", resourceName);
 
-    MBED_ASSERT(getResourceValue(&config.initWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_INIT_WAKE_UP));
-    MBED_ASSERT(getResourceValue(&config.initWakeUpCount,
-                                 RESOURCE_NUMBER_INIT_WAKE_UP_COUNT, RESOURCE_INSTANCE_INIT_WAKE_UP));
-    MBED_ASSERT(getResourceValue(&config.normalWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_NORMAL_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_NORMAL_WAKE_UP));
-    MBED_ASSERT(getResourceValue(&config.normalWakeUpCount,
-                                 RESOURCE_NUMBER_NORMAL_WAKE_UP_COUNT, RESOURCE_INSTANCE_NORMAL_WAKE_UP));
-    MBED_ASSERT(getResourceValue(&config.batteryWakeUpTickPeriod,
-                                 RESOURCE_NUMBER_BATTERY_WAKE_UP_TICK_PERIOD, RESOURCE_INSTANCE_BATTERY_WAKE_UP));
+    MBED_ASSERT(getResourceValue(&config.initWakeUpTickCounterPeriod,
+                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_PERIOD, RESOURCE_INSTANCE_INIT_WAKE_UP));
+    MBED_ASSERT(getResourceValue(&config.initWakeUpTickCounterModulo,
+                                 RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_MODULO, RESOURCE_INSTANCE_INIT_WAKE_UP));
+    MBED_ASSERT(getResourceValue(&config.readyWakeUpTickCounterPeriod1,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_1, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_1));
+    MBED_ASSERT(getResourceValue(&config.readyWakeUpTickCounterPeriod2,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_2, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_2));
+    MBED_ASSERT(getResourceValue(&config.readyWakeUpTickCounterModulo,
+                                 RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_MODULO, RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_MODULO));
     MBED_ASSERT(getResourceValue(&config.gnssEnable,
                                  RESOURCE_NUMBER_GNSS_ENABLE));
 
     printfLog("IocM2mConfig: new config is:\n");
-    printfLog("  initWakeUpTickPeriod %f.\n", config.initWakeUpTickPeriod);
-    printfLog("  initWakeUpCount %d.\n", config.initWakeUpCount);
-    printfLog("  normalWakeUpTickPeriod %f.\n", config.normalWakeUpTickPeriod);
-    printfLog("  normalWakeUpCount %d.\n", config.normalWakeUpCount);
-    printfLog("  batteryWakeUpTickPeriod %f.\n", config.batteryWakeUpTickPeriod);
+    printfLog("  initWakeUpTickCounterPeriod %f.\n", config.initWakeUpTickCounterPeriod);
+    printfLog("  initWakeUpTickCounterModulo %d.\n", config.initWakeUpTickCounterModulo);
+    printfLog("  readyWakeUpTickCounterPeriod1 %f.\n", config.readyWakeUpTickCounterPeriod1);
+    printfLog("  readyWakeUpTickCounterPeriod2 %d.\n", config.readyWakeUpTickCounterPeriod2);
+    printfLog("  readyWakeUpTickCounterModulo %f.\n", config.readyWakeUpTickCounterModulo);
     printfLog("  GNSS enable %d.\n", config.gnssEnable);
 
     if (_setCallback) {

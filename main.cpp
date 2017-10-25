@@ -102,12 +102,12 @@
 #define AUDIO_DEFAULT_SERVER_URL         "ciot.it-sgn.u-blox.com:5065"
 
 // The default config data.
-#define CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD    3600
-#define CONFIG_DEFAULT_INIT_WAKEUP_COUNT          2
-#define CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD  60
-#define CONFIG_DEFAULT_NORMAL_WAKEUP_COUNT        60
-#define CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD 600
-#define CONFIG_DEFAULT_GNSS_ENABLE                true
+#define CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_PERIOD     600
+#define CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_MODULO     3
+#define CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1  60
+#define CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_2  600
+#define CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_MODULO    60
+#define CONFIG_DEFAULT_GNSS_ENABLE                          true
 
 // The static temperature object values.
 #define TEMPERATURE_MIN_MEASURABLE_RANGE -10.0
@@ -115,7 +115,7 @@
 #define TEMPERATURE_UNITS "cel"
 
 // The period at which observable resources are updated.
-#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD * 1000
+#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 * 1000
 
 // The period at which GNSS location is read (if it is active).
 #define GNSS_UPDATE_PERIOD_MS (OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS / 2)
@@ -1241,11 +1241,11 @@ static void executeResetTemperatureMinMax()
 static void setConfigData(const IocM2mConfig::Config *data)
 {
     printf("Received new config settings:\n");
-    printf("  initWakeUpTickPeriod %f.\n", data->initWakeUpTickPeriod);
-    printf("  initWakeUpCount %lld.\n", data->initWakeUpCount);
-    printf("  normalWakeUpTickPeriod %f.\n", data->normalWakeUpTickPeriod);
-    printf("  normalWakeUpCount %lld.\n", data->normalWakeUpCount);
-    printf("  batteryWakeUpTickPeriod %f.\n", data->batteryWakeUpTickPeriod);
+    printf("  initWakeUpTickCounterPeriod %f.\n", data->initWakeUpTickCounterPeriod);
+    printf("  initWakeUpTickCounterModulo %lld.\n", data->initWakeUpTickCounterModulo);
+    printf("  readyWakeUpTickCounterPeriod1 %f.\n", data->readyWakeUpTickCounterPeriod1);
+    printf("  readyWakeUpTickCounterPeriod2 %f.\n", data->readyWakeUpTickCounterPeriod2);
+    printf("  readyWakeUpTickCounterModulo %lld.\n", data->readyWakeUpTickCounterModulo);
     printf("  GNSS enable %d.\n", data->gnssEnable);
 
     /// Handle GNSS configuration changes
@@ -1525,11 +1525,11 @@ static bool init()
 
     flash();
     printf("Setting up data storage...\n");
-    gConfigData.initWakeUpTickPeriod = CONFIG_DEFAULT_INIT_WAKEUP_TICK_PERIOD;
-    gConfigData.initWakeUpCount = CONFIG_DEFAULT_INIT_WAKEUP_COUNT;
-    gConfigData.normalWakeUpTickPeriod = CONFIG_DEFAULT_NORMAL_WAKEUP_TICK_PERIOD;
-    gConfigData.normalWakeUpCount = CONFIG_DEFAULT_NORMAL_WAKEUP_COUNT;
-    gConfigData.batteryWakeUpTickPeriod = CONFIG_DEFAULT_BATTERY_WAKEUP_TICK_PERIOD;
+    gConfigData.initWakeUpTickCounterPeriod = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_PERIOD;
+    gConfigData.initWakeUpTickCounterModulo = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_MODULO;
+    gConfigData.readyWakeUpTickCounterPeriod1 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1;
+    gConfigData.readyWakeUpTickCounterPeriod2 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_2;
+    gConfigData.readyWakeUpTickCounterModulo = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_MODULO;
     gConfigData.gnssEnable = CONFIG_DEFAULT_GNSS_ENABLE;
 
     gAudioLocalPending.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
@@ -1674,9 +1674,9 @@ static bool init()
 
         flash();
         printf("Configuring the LWM2M Device object...\n");
-        if (gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
+        if (/*gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
             gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) &&
-            gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) &&
+            gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) && */
             gpCloudClientDm->setDeviceObjectSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
             gpCloudClientDm->setDeviceObjectFirmwareVersion(DEVICE_OBJECT_FIRMWARE_VERSION) &&
             gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY) &&
@@ -1696,7 +1696,7 @@ static bool init()
 
     if (!dmObjectConfigGood) {
         bad();
-        printf("Unable to configure the Device object after %d attempts.\n", y - 1);
+        printf("Unable to configure the Device object after %d attempt(s).\n", y - 1);
         return false;
     }
 
@@ -1899,6 +1899,85 @@ static void deinit()
  * MAIN
  * -------------------------------------------------------------- */
 
+/** The dynamic behaviour of the Internet Of Chuffs client is as
+ * follows:
+ *
+ * - there is a wakeUpTick, a wakeUpTickCounter, a
+ *   wakeUpTickCounterModulo and a sleepLevel,
+ *
+ * - wakeUpTickCounter is incremented every wakeUpTick, modulo
+ *   wakeUpTickCounterModulo,
+ *
+ * - the possible SleepLevels are:
+ *
+ *   NONE:        peripherals are up (though they may be quiescent),
+ *                GNSS may be on, modem is on, MCU is clocked
+ *                normally,
+ *   MCU_SLEEP:   as "NONE" except MCU is in clock-stop so no timers
+ *                are running, it will only wake up from RTC interrupt,
+ *   BOARD_SLEEP: peripherals are in lowest power state, GNSS and
+ *                modem are off, MCU is in deep sleep (so RAM is off
+ *                as well) but will awake from RTC interrupt,
+ *   OFF:         everything is powered down, all state is lost and
+ *                a power-cycle is required to wake the system up,
+ *
+ * - the IOC client wakes up, either from sleepLevel or from
+ *   power-cycle, performs some operation and, when the operation
+ *   finishes, the IOC client is returned to sleepLevel,
+ *
+ * - there are two modes of behaviour, Initialisation and Ready:
+ *
+ *   - in Initialisation mode the IOC client is trying to register
+ *     with the LWM2M server in the Mbed Cloud,
+ *   - in Ready mode the IOC client reports-in to the Mbed Cloud
+ *     on a regular basis and awaits instructions from it.
+ *
+ * - In summary, the life-cycle is as follows, implemented using
+ *   the mechanisms above:
+ *
+ *   1. enter Initialisation mode for a time,
+ *   2. if Initialisation mode is successfully completed, go to
+ *      Ready mode for a period of time,
+ *   3. if an instruction is received in Ready mode, reset
+ *      the Ready mode timer,
+ *   4. if Initialisation mode is not completed in time or the Ready
+ *      mode timer expires, return to OFF,
+ *   5. the timers will be set such that, if there is no external
+ *      power, the IOC client stays awake for about 60 minutes and
+ *      no longer.
+ *
+ * In detail, Initialisation mode dynamic behaviour is as follows:
+ *
+ * - the variables are set up on entry:
+ *   - wakeUpTick period:       10 minutes [initWakeUpTickPeriod],
+ *   - sleepLevel:              BOARD_SLEEP,
+ *   - wakeUpTickCounterModulo: 3 [initWakeUpCounterModulo],
+ * - on wake-up, run init(),
+ * - if init() is completed, move immediately to Ready mode,
+ * - at each tick:
+ *   - if wakeUpTickCounterModulo has been reached AND
+ *     there is NO external power, go to sleepLevel OFF,
+ *   - otherwise, run init().
+ *
+ * In detail, Ready mode dynamic behaviour is as follows:
+ *
+ * - the variables are set up on entry:
+ *   - wakeUpTick period:       1 minute [readyWakeUpTickPeriod1],
+ *   - sleepLevel:              MCU SLEEP,
+ *   - wakeUpTickCounterModulo: 60 [readyWakeUpCounterModulo],
+ * - at each tick, report-in to the Mbed Cloud LWM2M server,
+ * - if an instruction is received from the Mbed Cloud LWM2M
+ *   server then:
+ *   - act upon it,
+ *   - if there is external power, reset the wakeUpTickCounter,
+ * - if no instruction is received, or the instruction
+ *   has been completed, go to sleepLevel until the next
+ *   tick,
+ * - if wakeUpTickCounterModulo is reached:
+ *   - if there is external power, set wakeUpTick to 10
+ *     minutes [readyWakeUpTickPeriod2],
+ *   - if there is no external power, go to sleepLevel OFF.
+ */
 int main() {
 
     gResetReason = getResetReason();

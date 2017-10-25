@@ -274,11 +274,11 @@ public:
      * are given as floats (of seconds).
      */
     typedef struct {
-        float initWakeUpTickPeriod;
-        int64_t initWakeUpCount;
-        float normalWakeUpTickPeriod;
-        int64_t normalWakeUpCount;
-        float batteryWakeUpTickPeriod;
+        float initWakeUpTickCounterPeriod;
+        int64_t initWakeUpTickCounterModulo;
+        float readyWakeUpTickCounterPeriod1;
+        float readyWakeUpTickCounterPeriod2;
+        int64_t readyWakeUpTickCounterModulo;
         bool gnssEnable;
     } Config;
 
@@ -305,42 +305,46 @@ public:
 
 protected:
 
-    /** The resource instance for initWakeUp*.
+    /** The resource instance for initWakeUp.
      */
 #   define RESOURCE_INSTANCE_INIT_WAKE_UP 0
 
-    /** The resource number for initWakeUpTickPeriod,
+    /** The resource number for initWakeUpTickCounterPeriod,
      * a Duration resource.
      */
-#   define RESOURCE_NUMBER_INIT_WAKE_UP_TICK_PERIOD "5524"
+#   define RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_PERIOD "5524"
 
-    /** The resource number for initWakeUpCount,
+    /** The resource number for initWakeUpTickCounterModulo,
      * a Counter resource.
      */
-#   define RESOURCE_NUMBER_INIT_WAKE_UP_COUNT "5534"
+#   define RESOURCE_NUMBER_INIT_WAKE_UP_TICK_COUNTER_MODULO "5534"
 
-    /** The resource instance for normalWakeUp*.
+    /** The resource instance for readyWakeUpTickCounterPeriod1.
      */
-#   define RESOURCE_INSTANCE_NORMAL_WAKE_UP 1
+#   define RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 1
 
-    /** The resource number for normalWakeUpTickPeriod,
+    /** The resource number for readyWakeUpTickCounterPeriod1,
      * a Duration resource.
      */
-#   define RESOURCE_NUMBER_NORMAL_WAKE_UP_TICK_PERIOD "5524"
+#   define RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 "5524"
 
-    /** The resource number for normalWakeUpCount,
+    /** The resource instance for readyWakeUpTickCounterPeriod2.
+     */
+#   define RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_PERIOD_2 2
+
+    /** The resource number for readyWakeUpTickCounterPeriod2,
+     * a Duration resource.
+     */
+#   define RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_PERIOD_2 "5524"
+
+    /** The resource instance for readyWakeUpTickCounterModulo.
+     */
+#   define RESOURCE_INSTANCE_READY_WAKE_UP_TICK_COUNTER_MODULO 1
+
+    /** The resource number for readyWakeUpTickCounterModulo,
      * a Counter resource.
      */
-#   define RESOURCE_NUMBER_NORMAL_WAKE_UP_COUNT "5534"
-
-    /** The resource instance for batteryWakeUp*.
-     */
-#   define RESOURCE_INSTANCE_BATTERY_WAKE_UP 2
-
-    /** The resource number for batteryWakeUpTickPeriod,
-     * a Duration resource.
-     */
-#   define RESOURCE_NUMBER_BATTERY_WAKE_UP_TICK_PERIOD "5524"
+#   define RESOURCE_NUMBER_READY_WAKE_UP_TICK_COUNTER_MODULO "5534"
 
     /** The resource number for gnssEnable, a Boolean
      * resource.
