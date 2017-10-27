@@ -13,6 +13,7 @@
 //----------------------------------------------------------------------------
 
 #include "mbed.h"
+#include "low_power.h"
 #include "factory_configurator_client.h"
 #include "SDBlockDevice.h"
 #include "UbloxPPPCellularInterface.h"
@@ -102,6 +103,7 @@
 #define AUDIO_DEFAULT_SERVER_URL         "ciot.it-sgn.u-blox.com:5065"
 
 // The default config data.
+#define DEFAULT_POWER_ON_NOT_OFF                            false
 #define CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_PERIOD     600
 #define CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_MODULO     3
 #define CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1  60
@@ -114,11 +116,8 @@
 #define TEMPERATURE_MAX_MEASURABLE_RANGE 120.0
 #define TEMPERATURE_UNITS "cel"
 
-// The period at which observable resources are updated.
-#define OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 * 1000
-
 // The period at which GNSS location is read (if it is active).
-#define GNSS_UPDATE_PERIOD_MS (OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS / 2)
+#define GNSS_UPDATE_PERIOD_MS (CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 / 2)
 
 // Timeout for comms with the GNSS chip,
 // should be less than GNSS_UPDATE_PERIOD_MS.
@@ -134,10 +133,33 @@
 #define SIG_DATAGRAM_READY 0x01
 
 // Interval at which the watchdog should be fed.
-#define WATCHDOG_WAKEUP_MS 30000
+#define WATCHDOG_WAKEUP_MS 32000
+
+// Maximum sleep period.
+#define MAX_SLEEP_SECONDS ((WATCHDOG_WAKEUP_MS / 1000) - 1)
+
+// The maximum size of a history marker.
+// The history marker is a string stored in battery-backed SRAM
+// which allows us to tell what the system was doing previously.
+// On a power-on reset is will contain random garbage.
+#define HISTORY_MARKER_MAX_SIZE 6
+
+// History marker indicating that the system was in standby.
+#define HISTORY_MARKER_STANDBY "stdby"
+
+// History marker indicating that the system was off.
+#define HISTORY_MARKER_OFF "off"
+
+// History marker indicating that the system was running
+// normally.
+#define HISTORY_MARKER_NORMAL "norm"
 
 // The interval at which we check for exit.
 #define BUTTON_CHECK_INTERVAL_MS 1000
+
+// The minimum Voltage limit that must be set in the battery
+// charger chip to make USB operation reliable.
+#define MIN_INPUT_VOLTAGE_LIMIT_MV  3880
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -198,6 +220,16 @@ typedef union {
     UDPSocket *pUdpSock;
 } SocketPointerUnion;
 
+// Local version of config data.
+typedef struct {
+    time_t initWakeUpTickCounterPeriod;
+    int64_t initWakeUpTickCounterModulo;
+    time_t readyWakeUpTickCounterPeriod1;
+    time_t readyWakeUpTickCounterPeriod2;
+    int64_t readyWakeUpTickCounterModulo;
+    bool gnssEnable;
+} ConfigLocal;
+
 // Local version of temperature data.
 typedef struct {
     int32_t nowC;
@@ -244,6 +276,88 @@ public:
 };
 
 /* ----------------------------------------------------------------
+ * STATIC FUNCTION PROTOTYPES
+ * -------------------------------------------------------------- */
+
+// Diagnostics.
+static void good();
+static void notBad();
+static void bad();
+static void toggleGreen();
+static void event();
+static void notEvent();
+static void flash();
+static void ledOff();
+static void heapStats();
+
+// URTP codec and its callback functions.
+static void datagramReadyCb(const char * datagram);
+static void datagramOverflowStartCb();
+static void datagramOverflowStopCb(int numOverflows);
+
+// Audio connection.
+static void audioMonitor();
+static void getAddressFromUrl(const char * pUrl, char * pAddressBuf, int lenBuf);
+static bool getPortFromUrl(const char * pUrl, int *port);
+static bool startAudioStreamingConnection(AudioLocal *pAudio);
+static void stopAudioStreamingConnection(AudioLocal *pAudio);
+static int tcpSend(TCPSocket * pSock, const char * pData, int size);
+static void sendAudioData(const AudioLocal * pAudioLocal);
+
+// I2S interface control.
+static void i2sEventCallback (int arg);
+static bool startI2s(I2S * pI2s);
+static void stopI2s(I2S * pI2s);
+
+// Audio control.
+static void stopStreaming(AudioLocal *pAudioLocal);
+static bool startStreaming(AudioLocal *pAudioLocal);
+
+// GNSS control.
+static bool isLeapYear(int year);
+static bool gnssInit(GnssSerial * pGnss);
+static unsigned int littleEndianUInt(char *pByte);
+static bool gnssUpdate(IocM2mLocation::Location *location);
+
+// LWM2M control.
+static void addObject(IocM2mObjectId id, void * object);
+static void deleteObject(IocM2mObjectId id);
+static void setPowerControl(bool value);
+static bool getLocationData(IocM2mLocation::Location *data);
+static bool getTemperatureData(IocM2mTemperature::Temperature *data);
+static void executeResetTemperatureMinMax();
+static void setConfigData(const IocM2mConfig::Config *data);
+static IocM2mConfig::Config *convertConfigLocalToM2m (IocM2mConfig::Config *pM2m, const ConfigLocal *pLocal);
+static void setAudioData(const IocM2mAudio::Audio *m2mAudio);
+static bool getStreamingEnabled(bool *streamingEnabled);
+static IocM2mAudio::Audio *convertAudioLocalToM2m (IocM2mAudio::Audio *pM2m, const AudioLocal *pLocal);
+static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data);
+static void objectUpdate();
+static void cloudClientRegisteredCallback();
+static void cloudClientDeregisteredCallback();
+
+// Misc.
+static void buttonCallback();
+static void watchdogFeedCallback();
+
+// Initialisation and deinitialisation.
+static ResetReason getResetReason();
+static void initPower();
+static void deinitPower();
+static bool init();
+static void deinit();
+
+// Operating modes and sleep
+static void setSleepLevelRegistered(time_t sleepDurationSeconds);
+static void setSleepLevelDeregistered(time_t sleepDurationSeconds);
+static void setSleepLevelOff();
+static void initModeWakeUpTickHandler();
+static void initMode();
+static void readyModeInstructionReceived();
+static void readyModeWakeUpTickHandler();
+static void readyMode();
+
+/* ----------------------------------------------------------------
  * VARIABLES
  * -------------------------------------------------------------- */
 
@@ -251,8 +365,12 @@ public:
 // in pal_plat_fileSystem.cpp.
 extern SDBlockDevice sd;
 
-// The reason we woke up
-static ResetReason gResetReason = RESET_REASON_UNKNOWN;
+// The reason we woke up.
+BACKUP_SRAM
+static ResetReason gResetReason;
+
+// The low power driver.
+static LowPower gLowPower;
 
 // The network interface.
 static UbloxPPPCellularInterface *gpCellular = NULL;
@@ -266,19 +384,38 @@ static UpdateCallback *gpCloudClientGlobalUpdateCallback = NULL;
 // IocM2mObjectId enum.
 static IocM2mObject gObjectList[MAX_NUM_IOC_M2M_OBJECTS];
 
-// Data storage.
-static bool gPowerOnNotOff = false;
-static IocM2mConfig::Config gConfigData;
+// Storage for a marker in back-up SRAM to indicate
+// what was happening before the system started.
+BACKUP_SRAM
+static char gHistoryMarker[HISTORY_MARKER_MAX_SIZE];
 
-// Temperature data
+// Put the time that we went to sleep in back-up SRAM.
+BACKUP_SRAM
+static time_t gTimeEnterSleep;
+
+// Put the time that we should wake from sleep in back-up SRAM.
+BACKUP_SRAM
+static time_t gTimeLeaveSleep;
+
+// The wake-up tick counter
+BACKUP_SRAM
+static int gWakeUpTickCounter;
+
+// Configuration data storage.
+BACKUP_SRAM
+static bool gPowerOnNotOff;
+BACKUP_SRAM
+static ConfigLocal gConfigLocal;
+
+// Temperature data.
 static TemperatureLocal gTemperatureLocal = {0};
 
 // The event loop and event queue.
 static Thread *gpEventThread = NULL;
 static EventQueue gEventQueue (32 * EVENTS_EVENT_SIZE);
 
-// Event ID for the LWM2M object update event.
-static int gObjectUpdateEvent = -1;
+// Event ID for wake-up tick handler.
+static int gWakeUpTickHandler = -1;
 
 // Thread required to run the I2S driver event queue.
 static Thread *gpI2sTask = NULL;
@@ -296,14 +433,18 @@ static uint32_t gRawAudio[(SAMPLES_PER_BLOCK * 2) * 2];
 __attribute__ ((section ("CCMRAM")))
 static char gDatagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
-// Buffer that holds one TCP packet
+// Buffer that holds one TCP packet.
 static char gTcpBuffer[TCP_BUFFER_LENGTH];
 static char *gpTcpBuffer = gTcpBuffer;
 
 // Task to send data off to the audio streaming server.
 static Thread *gpSendTask = NULL;
 
+// The URTP codec.
+static Urtp gUrtp(&datagramReadyCb, &datagramOverflowStartCb, &datagramOverflowStopCb);
+
 // Audio comms parameters.
+BACKUP_SRAM
 static AudioLocal gAudioLocalPending;
 static AudioLocal gAudioLocalActive;
 
@@ -353,19 +494,19 @@ static int gStartTime = 0;
  * STATIC FUNCTIONS: DIAGNOSTICS
  * -------------------------------------------------------------- */
 
-// Indicate good (green)
+// Indicate good (green).
 static void good() {
     gLedGreen = 0;
     gLedBlue = 1;
     gLedRed = 1;
 }
 
-// Switch bad (red) off again
+// Switch bad (red) off again.
 static void notBad() {
     gLedRed = 1;
 }
 
-// Indicate bad (red)
+// Indicate bad (red).
 static void bad() {
     gLedRed = 0;
     gLedGreen = 1;
@@ -375,36 +516,36 @@ static void bad() {
     }
 }
 
-// Toggle green
+// Toggle green.
 static void toggleGreen() {
     gLedGreen = !gLedGreen;
 }
 
-// Set blue
+// Set blue.
 static void event() {
     gLedBlue = 0;
 }
 
-// Unset blue
+// Unset blue.
 static void notEvent() {
     gLedBlue = 1;
 }
 
-// Flash blue
+// Flash blue.
 static void flash() {
     gLedBlue = !gLedBlue;
     wait_ms(50);
     gLedBlue = !gLedBlue;
 }
 
-// All off
+// All off.
 static void ledOff() {
     gLedBlue = 1;
     gLedRed = 1;
     gLedGreen = 1;
 }
 
-// Print heap stats
+// Print heap stats.
 static void heapStats()
 {
 #ifdef MBED_HEAP_STATS_ENABLED
@@ -441,9 +582,6 @@ static void datagramOverflowStopCb(int numOverflows)
     notEvent();
 }
 
-// The URTP codec.
-static Urtp gUrtp(&datagramReadyCb, &datagramOverflowStartCb, &datagramOverflowStopCb);
-
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: AUDIO CONNECTION
  * -------------------------------------------------------------- */
@@ -461,7 +599,7 @@ static void audioMonitor()
 }
 
 // Get the address portion of a URL, leaving off the port number etc.
-void getAddressFromUrl(const char * pUrl, char * pAddressBuf, int lenBuf)
+static void getAddressFromUrl(const char * pUrl, char * pAddressBuf, int lenBuf)
 {
     const char * pPortPos;
     int lenUrl;
@@ -489,7 +627,7 @@ void getAddressFromUrl(const char * pUrl, char * pAddressBuf, int lenBuf)
 }
 
 // Get the port number from the end of a URL.
-bool getPortFromUrl(const char * pUrl, int *port)
+static bool getPortFromUrl(const char * pUrl, int *port)
 {
     bool success = false;
     const char * pPortPos = strchr(pUrl, ':');
@@ -844,7 +982,7 @@ static void stopI2s(I2S * pI2s)
  * -------------------------------------------------------------- */
 
 // Stop audio streaming.
-void stopStreaming(AudioLocal *pAudioLocal)
+static void stopStreaming(AudioLocal *pAudioLocal)
 {
     stopI2s(&gMic);
 
@@ -872,7 +1010,7 @@ void stopStreaming(AudioLocal *pAudioLocal)
 
 // Start audio streaming.
 // Note: here be multiple return statements.
-bool startStreaming(AudioLocal *pAudioLocal)
+static bool startStreaming(AudioLocal *pAudioLocal)
 {
     int retValue;
 
@@ -1145,7 +1283,7 @@ static void addObject(IocM2mObjectId id, void * object)
 // Delete an object.
 // IMPORTANT: this does not remove the object from the Mbed Cloud Client,
 // the Mbed Cloud Client clears itself up at the end.
-void deleteObject(IocM2mObjectId id)
+static void deleteObject(IocM2mObjectId id)
 {
     if (gObjectList[id].object.raw != NULL) {
         switch (id) {
@@ -1190,6 +1328,9 @@ static void setPowerControl(bool value)
 {
     printf("Power control set to %d.\n", value);
 
+    // Something has happened, tell Ready mode about it
+    readyModeInstructionReceived();
+
     gPowerOnNotOff = value;
 
     // TODO act on it
@@ -1230,6 +1371,9 @@ static bool getTemperatureData(IocM2mTemperature::Temperature *data)
 // via the IocM2mTemperature object.
 static void executeResetTemperatureMinMax()
 {
+    // Something has happened, tell Ready mode about it
+    readyModeInstructionReceived();
+
     printf("Received min/max temperature reset.\n");
 
     gTemperatureLocal.minC = gTemperatureLocal.nowC;
@@ -1240,6 +1384,9 @@ static void executeResetTemperatureMinMax()
 // object.
 static void setConfigData(const IocM2mConfig::Config *data)
 {
+    // Something has happened, tell Ready mode about it
+    readyModeInstructionReceived();
+
     printf("Received new config settings:\n");
     printf("  initWakeUpTickCounterPeriod %f.\n", data->initWakeUpTickCounterPeriod);
     printf("  initWakeUpTickCounterModulo %lld.\n", data->initWakeUpTickCounterModulo);
@@ -1262,7 +1409,25 @@ static void setConfigData(const IocM2mConfig::Config *data)
 
     // TODO act on the rest of it
 
-    gConfigData = *data;
+    gConfigLocal.initWakeUpTickCounterPeriod = (time_t) data->initWakeUpTickCounterPeriod;
+    gConfigLocal.initWakeUpTickCounterModulo = data->initWakeUpTickCounterModulo;
+    gConfigLocal.readyWakeUpTickCounterPeriod1 = (time_t) data->readyWakeUpTickCounterPeriod1;
+    gConfigLocal.readyWakeUpTickCounterPeriod2 = (time_t) data->readyWakeUpTickCounterPeriod2;
+    gConfigLocal.readyWakeUpTickCounterModulo = data->readyWakeUpTickCounterModulo;
+    gConfigLocal.gnssEnable = data->gnssEnable;
+}
+
+// Convert a local config data structure to the IocM2mConfig one.
+static IocM2mConfig::Config *convertConfigLocalToM2m (IocM2mConfig::Config *pM2m, const ConfigLocal *pLocal)
+{
+    pM2m->initWakeUpTickCounterPeriod = (float) pLocal->initWakeUpTickCounterPeriod;
+    pM2m->initWakeUpTickCounterModulo = pLocal->initWakeUpTickCounterModulo;
+    pM2m->readyWakeUpTickCounterPeriod1 = (float) pLocal->readyWakeUpTickCounterPeriod1;
+    pM2m->readyWakeUpTickCounterPeriod2 = (float) pLocal->readyWakeUpTickCounterPeriod2;
+    pM2m->readyWakeUpTickCounterModulo = pLocal->readyWakeUpTickCounterModulo;
+    pM2m->gnssEnable = pLocal->gnssEnable;
+
+    return pM2m;
 }
 
 // Callback that sets the configuration data via the IocM2mAudio
@@ -1270,6 +1435,9 @@ static void setConfigData(const IocM2mConfig::Config *data)
 static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
 {
     bool streamingWasEnabled = gAudioLocalPending.streamingEnabled;
+
+    // Something has happened, tell Ready mode about it
+    readyModeInstructionReceived();
 
     printf("Received new audio parameters:\n");
     printf("  streamingEnabled %d.\n", m2mAudio->streamingEnabled);
@@ -1433,9 +1601,6 @@ static void cloudClientRegisteredCallback()
     good();
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 
-    // Start the observable resource update timer
-    gObjectUpdateEvent = gEventQueue.call_every(OBSERVABLE_RESOURCE_UPDATE_PERIOD_MS, objectUpdate);
-
     // The registration process will update system time so
     // read the start time now.
     gStartTime = time(NULL);
@@ -1446,9 +1611,6 @@ static void cloudClientDeregisteredCallback()
 {
     flash();
     printf("Mbed Cloud Client deregistered.\n");
-
-    gEventQueue.cancel(gObjectUpdateEvent);
-    gObjectUpdateEvent = -1;
 }
 
 /* ----------------------------------------------------------------
@@ -1477,7 +1639,7 @@ static void watchdogFeedCallback()
  * -------------------------------------------------------------- */
 
 // Find out what woke us up
-ResetReason getResetReason()
+static ResetReason getResetReason()
 {
     ResetReason reason = RESET_REASON_UNKNOWN;
 
@@ -1498,8 +1660,80 @@ ResetReason getResetReason()
     return reason;
 }
 
-// Initialise everything.  If you add anything here, be sure to
-// add the opposite to deinit().
+// Initialise power.
+static void initPower()
+{
+    flash();
+    gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
+    gpBatteryCharger = new BatteryChargerBq24295();
+    if (gpBatteryCharger->init(gpI2C)) {
+        if (!gpBatteryCharger->enableCharging() ||
+            !gpBatteryCharger->setInputVoltageLimit(MIN_INPUT_VOLTAGE_LIMIT_MV) ||
+            !gpBatteryCharger->setWatchdog(0)) {
+            bad();
+            printf ("WARNING: unable to completely configure battery charger.\n");
+        }
+    } else {
+        bad();
+        printf ("WARNING: unable to initialise battery charger.\n");
+        delete gpBatteryCharger;
+        gpBatteryCharger = NULL;
+    }
+    gpBatteryGauge = new BatteryGaugeBq27441();
+    if (gpBatteryGauge->init(gpI2C)) {
+        if (!gpBatteryGauge->disableBatteryDetect() ||
+            !gpBatteryGauge->enableGauge()) {
+            bad();
+            printf ("WARNING: unable to completely configure battery gauge.\n");
+        }
+        // Reset the temperature min/max readings which are read from the gauge
+        if (gpBatteryGauge->getTemperature(&gTemperatureLocal.nowC)) {
+            gTemperatureLocal.minC = gTemperatureLocal.nowC;
+            gTemperatureLocal.maxC = gTemperatureLocal.nowC;
+        }
+    } else {
+        bad();
+        printf ("WARNING: unable to initialise battery gauge (maybe the battery is not connected?).\n");
+        delete gpBatteryGauge;
+        gpBatteryGauge = NULL;
+    }
+
+    // Only need I2C for battery stuff, so if neither work just delete it
+    if (!gpBatteryGauge && !gpBatteryCharger) {
+        delete gpI2C;
+        gpI2C = NULL;
+    }
+}
+
+// Deinitialise power.
+static void deinitPower()
+{
+    if (gpBatteryCharger) {
+        flash();
+        printf("Stopping battery charger...");
+        delete gpBatteryCharger;
+        gpBatteryCharger = NULL;
+    }
+
+    if (gpBatteryGauge) {
+        flash();
+        printf("Stopping battery gauge...");
+        gpBatteryGauge->disableGauge();
+        delete gpBatteryGauge;
+        gpBatteryGauge = NULL;
+    }
+
+    if (gpI2C) {
+        flash();
+        printf("Stopping I2C...");
+        delete gpI2C;
+        gpI2C = NULL;
+    }
+}
+
+// Initialise everything, bringing us to SleepLevel REGISTERED.
+// If you add anything here, be sure to add the opposite
+// to deinit().
 // Note: here be multiple return statements.
 static bool init()
 {
@@ -1519,19 +1753,7 @@ static bool init()
     initLog();
     LOG(EVENT_LOG_START, gResetReason);
 
-    // Start the event queue in the event thread
-    gpEventThread = new Thread();
-    gpEventThread->start(callback(&gEventQueue, &EventQueue::dispatch_forever));
-
-    flash();
-    printf("Setting up data storage...\n");
-    gConfigData.initWakeUpTickCounterPeriod = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_PERIOD;
-    gConfigData.initWakeUpTickCounterModulo = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_MODULO;
-    gConfigData.readyWakeUpTickCounterPeriod1 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1;
-    gConfigData.readyWakeUpTickCounterPeriod2 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_2;
-    gConfigData.readyWakeUpTickCounterModulo = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_MODULO;
-    gConfigData.gnssEnable = CONFIG_DEFAULT_GNSS_ENABLE;
-
+    // Set up defaults
     gAudioLocalPending.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
     gAudioLocalPending.duration = AUDIO_DEFAULT_DURATION;
     gAudioLocalPending.fixedGain = AUDIO_DEFAULT_FIXED_GAIN;
@@ -1543,42 +1765,6 @@ static bool init()
     printf("Creating user button...\n");
     gpUserButton = new InterruptIn(SW0);
     gpUserButton->rise(&buttonCallback);
-
-    flash();
-    printf("Starting I2C, battery gauge and battery charger...\n");
-    gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
-    gpBatteryGauge = new BatteryGaugeBq27441();
-    if (gpBatteryGauge->init(gpI2C)) {
-        printf("Battery gauge initialised, setting it up...\n");
-        gpBatteryGauge->disableBatteryDetect();
-        gpBatteryGauge->enableGauge();
-        // Reset the temperature min/max readings which are read from the gauge
-        if (gpBatteryGauge->getTemperature(&gTemperatureLocal.nowC)) {
-            gTemperatureLocal.minC = gTemperatureLocal.nowC;
-            gTemperatureLocal.maxC = gTemperatureLocal.nowC;
-        }
-    } else {
-        bad();
-        printf ("WARNING: unable to initialise battery gauge (maybe the battery is not connected?).\n");
-        delete gpBatteryGauge;
-        gpBatteryGauge = NULL;
-    }
-    gpBatteryCharger = new BatteryChargerBq24295();
-    if (gpBatteryCharger->init(gpI2C)) {
-        printf("Battery charger initialised, setting it up...\n");
-        gpBatteryCharger->enableCharging();
-    } else {
-        bad();
-        printf ("WARNING: unable to initialise battery charger.\n");
-        delete gpBatteryCharger;
-        gpBatteryCharger = NULL;
-    }
-
-    // Only need I2C for battery stuff, so if neither work just delete it
-    if (!gpBatteryGauge && !gpBatteryCharger) {
-        delete gpI2C;
-        gpI2C = NULL;
-    }
 
     if (CONFIG_DEFAULT_GNSS_ENABLE) {
         flash();
@@ -1674,7 +1860,9 @@ static bool init()
 
         flash();
         printf("Configuring the LWM2M Device object...\n");
-        if (/*gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
+        if (/* TODO: commented out while I try to figure out what's upsetting
+               fcc_verify_device_configured_4mbed_cloud()
+            gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
             gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) &&
             gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) && */
             gpCloudClientDm->setDeviceObjectSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
@@ -1717,14 +1905,17 @@ static bool init()
                                                          TEMPERATURE_MAX_MEASURABLE_RANGE,
                                                          TEMPERATURE_UNITS,
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
-    addObject(IOC_M2M_CONFIG, new IocM2mConfig(setConfigData, &gConfigData,
+    IocM2mConfig::Config *pTempStore1 = new IocM2mConfig::Config;
+    addObject(IOC_M2M_CONFIG, new IocM2mConfig(setConfigData,
+                                               convertConfigLocalToM2m(pTempStore1, &gConfigLocal),
                                                MBED_CONF_APP_OBJECT_DEBUG_ON));
-    IocM2mAudio::Audio *pTempStore = new IocM2mAudio::Audio;
+    delete pTempStore1;
+    IocM2mAudio::Audio *pTempStore2 = new IocM2mAudio::Audio;
     addObject(IOC_M2M_AUDIO, new IocM2mAudio(setAudioData,
                                              getStreamingEnabled,
-                                             convertAudioLocalToM2m(pTempStore, &gAudioLocalPending),
+                                             convertAudioLocalToM2m(pTempStore2, &gAudioLocalPending),
                                              MBED_CONF_APP_OBJECT_DEBUG_ON));
-    delete pTempStore;
+    delete pTempStore2;
     addObject(IOC_M2M_DIAGNOSTICS, new IocM2mDiagnostics(getDiagnosticsData,
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
 
@@ -1840,36 +2031,6 @@ static void deinit()
         gpGnss = NULL;
     }
 
-    if (gpBatteryGauge) {
-        flash();
-        printf("Stopping battery gauge...");
-        gpBatteryGauge->disableGauge();
-        delete gpBatteryGauge;
-        gpBatteryGauge = NULL;
-    }
-
-    if (gpBatteryCharger) {
-        flash();
-        printf("Stopping battery charger...");
-        delete gpBatteryCharger;
-        gpBatteryCharger = NULL;
-    }
-
-    if (gpI2C) {
-        flash();
-        printf("Stopping I2C...");
-        delete gpI2C;
-        gpI2C = NULL;
-    }
-
-    // Stop the event queue
-    if (gpEventThread) {
-        gpEventThread->terminate();
-        gpEventThread->join();
-        delete gpEventThread;
-        gpEventThread = NULL;
-    }
-
     HAL_IWDG_Refresh(&gWdt);
     flash();
     printf("Printing the log...\n");
@@ -1896,10 +2057,10 @@ static void deinit()
 }
 
 /* ----------------------------------------------------------------
- * MAIN
+ * STATIC FUNCTIONS: OPERATING MODES AND SLEEP
  * -------------------------------------------------------------- */
 
-/** The dynamic behaviour of the Internet Of Chuffs client is as
+/* The dynamic behaviour of the Internet Of Chuffs client is as
  * follows:
  *
  * - there is a wakeUpTick, a wakeUpTickCounter, a
@@ -1908,18 +2069,27 @@ static void deinit()
  * - wakeUpTickCounter is incremented every wakeUpTick, modulo
  *   wakeUpTickCounterModulo,
  *
- * - the possible SleepLevels are:
+ * - the possible sleepLevels are:
  *
- *   NONE:        peripherals are up (though they may be quiescent),
- *                GNSS may be on, modem is on, MCU is clocked
- *                normally,
- *   MCU_SLEEP:   as "NONE" except MCU is in clock-stop so no timers
- *                are running, it will only wake up from RTC interrupt,
- *   BOARD_SLEEP: peripherals are in lowest power state, GNSS and
- *                modem are off, MCU is in deep sleep (so RAM is off
- *                as well) but will awake from RTC interrupt,
- *   OFF:         everything is powered down, all state is lost and
- *                a power-cycle is required to wake the system up,
+ *   REGISTERED:         peripherals are up (though they may be quiescent),
+ *                       GNSS may be on, modem is on, MCU is clocked
+ *                       normally, the IOC Client is registered with the
+ *                       LWM2M Mbed Cloud Server; successful init() brings
+ *                       the IOC Client into this sleepLevel,
+ *   REGISTERED_SLEEP:   as "REGISTERED" except MCU is in clock-stop so no
+ *                       timers are running, the MCU will wake up from RTC
+ *                       interrupt,
+ *   DEREGISTERED_SLEEP: peripherals are in lowest power state, GNSS and
+ *                       modem are off, MCU is in deep sleep (so RAM is off
+ *                       as well) but will awake from RTC interrupt, the IOC
+ *                       Client is deregistered from the LWM2M Mbed Cloud
+ *                       Server; deinit() puts the IOC Client into this
+ *                       sleepLevel and init() must be run on return,
+ *   OFF:                as "DEREGISTERED_SLEEP" except that a power-cycle
+ *                       is required to wake the IOC Client up; note that,
+ *                       since the watchdog is active, OFF isn't truly
+ *                       off, the MCU will wake up at the watchdog interval
+ *                       and put itself immediately back to sleep again.
  *
  * - the IOC client wakes up, either from sleepLevel or from
  *   power-cycle, performs some operation and, when the operation
@@ -1949,9 +2119,9 @@ static void deinit()
  * In detail, Initialisation mode dynamic behaviour is as follows:
  *
  * - the variables are set up on entry:
- *   - wakeUpTick period:       10 minutes [initWakeUpTickPeriod],
- *   - sleepLevel:              BOARD_SLEEP,
- *   - wakeUpTickCounterModulo: 3 [initWakeUpCounterModulo],
+ *   - wakeUpTick period:       10 minutes [initWakeUpTickCounterPeriod],
+ *   - sleepLevel:              DEREGISTERED_SLEEP,
+ *   - wakeUpTickCounterModulo: 3 [initWakeUpTickCounterModulo],
  * - on wake-up, run init(),
  * - if init() is completed, move immediately to Ready mode,
  * - at each tick:
@@ -1962,9 +2132,9 @@ static void deinit()
  * In detail, Ready mode dynamic behaviour is as follows:
  *
  * - the variables are set up on entry:
- *   - wakeUpTick period:       1 minute [readyWakeUpTickPeriod1],
- *   - sleepLevel:              MCU SLEEP,
- *   - wakeUpTickCounterModulo: 60 [readyWakeUpCounterModulo],
+ *   - wakeUpTick period:       1 minute [readyWakeUpTickCounterPeriod1],
+ *   - sleepLevel:              REGISTERED_SLEEP,
+ *   - wakeUpTickCounterModulo: 60 [readyWakeUpTickCounterModulo],
  * - at each tick, report-in to the Mbed Cloud LWM2M server,
  * - if an instruction is received from the Mbed Cloud LWM2M
  *   server then:
@@ -1975,12 +2145,227 @@ static void deinit()
  *   tick,
  * - if wakeUpTickCounterModulo is reached:
  *   - if there is external power, set wakeUpTick to 10
- *     minutes [readyWakeUpTickPeriod2],
+ *     minutes [readyWakeUpTickCounterPeriod2],
  *   - if there is no external power, go to sleepLevel OFF.
  */
-int main() {
+
+// Go to MCU sleep but remain registered, for the given time.
+static void setSleepLevelRegistered(time_t sleepDurationSeconds)
+{
+    time_t sleepTimeLeft;
+    gTimeEnterSleep = time(NULL);
+    gTimeLeaveSleep = gTimeEnterSleep + sleepDurationSeconds;
+
+    printf("Going to REGISTERED_SLEEP for %d second(s), until %s",
+           (int) (sleepDurationSeconds), ctime(&gTimeLeaveSleep));
+
+    // Need to wake-up at the watchdog interval to feed it
+    while ((sleepTimeLeft = (gTimeLeaveSleep - time(NULL))) > 0) {
+        if (sleepTimeLeft > MAX_SLEEP_SECONDS) {
+            sleepTimeLeft = MAX_SLEEP_SECONDS;
+        }
+
+        HAL_IWDG_Refresh(&gWdt);
+        gLowPower.enterStop(sleepTimeLeft);
+    }
+
+    printf("Awake from REGISTERED_SLEEP after %d second(s).\n", (int) (time(NULL) - gTimeEnterSleep));
+}
+
+// Go to deregistered sleep for the given time.
+static void setSleepLevelDeregistered(time_t sleepDurationSeconds)
+{
+    gTimeEnterSleep = time(NULL);
+    gTimeLeaveSleep = gTimeEnterSleep + sleepDurationSeconds;
+
+    printf("Going to DEREGISTERED_SLEEP for %d second(s), until %s",
+           (int) (sleepDurationSeconds), ctime(&gTimeLeaveSleep));
+
+    // Need to wake-up at the watchdog interval to feed it
+    if (sleepDurationSeconds > MAX_SLEEP_SECONDS) {
+        sleepDurationSeconds = MAX_SLEEP_SECONDS;
+    }
+    memcpy(gHistoryMarker, HISTORY_MARKER_STANDBY, sizeof (gHistoryMarker));
+    HAL_IWDG_Refresh(&gWdt);
+    gLowPower.enterStandby(sleepDurationSeconds * 1000);
+    // The wake-up process is handled on entry to main()
+}
+
+// Go to OFF sleep state, from which only a power
+// cycle will awaken us (or the watchdog, but we'll
+// immediately go back to sleep again)
+static void setSleepLevelOff()
+{
+    memcpy(gHistoryMarker, HISTORY_MARKER_OFF, sizeof (gHistoryMarker));
+    HAL_IWDG_Refresh(&gWdt);
+    gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
+}
+
+// The Initialisation mode wake-up tick handler.
+static void initModeWakeUpTickHandler()
+{
+    gWakeUpTickCounter++;
+    if (gWakeUpTickCounter >= gConfigLocal.initWakeUpTickCounterModulo) {
+        gWakeUpTickCounter = 0;
+        if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
+            // If there is no external power and we've got here, it's been
+            // far too long so just give up
+            setSleepLevelOff();
+        } else {
+            // Otherwise, enter standby with a short
+            // timer, which will reset us to start trying
+            // again
+            gLowPower.enterStandby(100);
+        }
+    }
+}
+
+// Perform Initialisation mode.
+static void initMode()
+{
+    bool success = false;
+    time_t timeStarted;
+
+    // Add the Initialisation mode wake-up handler
+    gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.initWakeUpTickCounterPeriod * 1000, initModeWakeUpTickHandler);
+
+    // Initialise everything.  There are three possible outcomes:
+    //
+    // - init() succeeds, in which case this function returns,
+    // - init() fails, in which case we go to deregistered sleep for
+    //   the remainder of the wake up tick period,
+    // - init() takes longer than the wake up tick period, in which case
+    //   the initWakeUpTickHandler will kick in and restart things
+    //   in the appropriate way.
+    while (!success) {
+        timeStarted = time(NULL);
+        success = init();
+        if (!success) {
+            setSleepLevelDeregistered (gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
+        }
+    }
+
+    // Remove the Initialisation mode wake-up handler
+    gEventQueue.cancel(gWakeUpTickHandler);
+    gWakeUpTickHandler = -1;
+}
+
+// Deal with the fact that an instruction
+// has been received from the server.
+static void readyModeInstructionReceived()
+{
+    if (gpBatteryCharger && gpBatteryCharger->isExternalPowerPresent()) {
+        // If there is external power, reset the tick counter
+        // so that we stay awake
+        gWakeUpTickCounter = 0;
+    }
+}
+
+// The Ready mode wake-up tick handler.
+static void readyModeWakeUpTickHandler()
+{
+    gWakeUpTickCounter++;
+    if (gWakeUpTickCounter >= gConfigLocal.readyWakeUpTickCounterModulo) {
+        gWakeUpTickCounter = 0;
+        if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
+            // If there is no external power we've been awake for long enough
+            setSleepLevelOff();
+        } else {
+            // Otherwise, just switch to the long repeat period as obviously
+            // nothing much is happening
+            gEventQueue.cancel(gWakeUpTickHandler);
+            gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod2 * 1000, readyModeWakeUpTickHandler);
+        }
+    }
+
+    // Update the objects that the server can observe
+    objectUpdate();
+
+    // TODO call Mbed Cloud Client keep alive once we've
+    // understood how to drive Mbed Cloud Client in that way
+}
+
+// Perform Ready mode.
+static void readyMode()
+{
+    // Switch to the Ready mode wake-up handler and zero the tick count
+    gWakeUpTickCounter = 0;
+    gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod1 * 1000, readyModeWakeUpTickHandler);
+
+    for (int x = 0; !gUserButtonPressed; x++) {
+        HAL_IWDG_Refresh(&gWdt);
+        // TODO should go to sleep here but we can't until we find out
+        // how to drive Mbed Cloud Client in that way
+        wait_ms(BUTTON_CHECK_INTERVAL_MS);
+    }
+
+    // Cancel the Ready mode wake-up handler
+    gEventQueue.cancel(gWakeUpTickHandler);
+}
+
+/* ----------------------------------------------------------------
+ * MAIN
+ * -------------------------------------------------------------- */
+
+int main()
+{
+    time_t sleepTimeLeft;
+
+    flash();
 
     gResetReason = getResetReason();
+
+    // If this is a power on reset, do a system
+    // reset to get us out of our debug-mode
+    // entanglement with the debug chip on the
+    // mbed board and allow power saving
+    if (gResetReason == RESET_REASON_POWER_ON) {
+        NVIC_SystemReset();
+    }
+
+    // Bring up the battery charger and battery gauge
+    initPower();
+
+    // If we should be off, and there is no external
+    // power to keep us going, go straight back to sleep
+    if ((memcmp (gHistoryMarker, HISTORY_MARKER_OFF, sizeof (HISTORY_MARKER_OFF)) == 0) &&
+         gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
+        HAL_IWDG_Refresh(&gWdt);
+        gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
+    }
+
+    // If we've been in standby and the RTC is running,
+    // check if it's actually time to wake up yet
+    if ((memcmp (gHistoryMarker, HISTORY_MARKER_STANDBY, sizeof (HISTORY_MARKER_STANDBY)) == 0) &&
+        (time(NULL) != 0)) {
+        sleepTimeLeft = gTimeLeaveSleep - time(NULL);
+        if (sleepTimeLeft > 0) {
+            // Not time to wake up yet, feed the watchdog and go
+            // back to sleep
+            HAL_IWDG_Refresh(&gWdt);
+            if (sleepTimeLeft > MAX_SLEEP_SECONDS) {
+                sleepTimeLeft = MAX_SLEEP_SECONDS;
+            }
+            gLowPower.enterStandby(sleepTimeLeft);
+        }
+        printf("Awake from DEREGISTERED_SLEEP after %d second(s).\n",
+               (int) (time(NULL) - gTimeEnterSleep));
+    }
+
+    // If we were not running normally, this must have been a power-on reset,
+    // so zero the wake-up tick counter and set up configuration defaults
+    // Note: can't check for the gResetReason being RESET_REASON_POWER_ON because
+    // that's not the case under the debugger.
+    if ((memcmp (gHistoryMarker, HISTORY_MARKER_NORMAL, sizeof (HISTORY_MARKER_NORMAL)) != 0)) {
+        gWakeUpTickCounter = 0;
+        gPowerOnNotOff = DEFAULT_POWER_ON_NOT_OFF;
+        gConfigLocal.initWakeUpTickCounterPeriod = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_PERIOD;
+        gConfigLocal.initWakeUpTickCounterModulo = CONFIG_DEFAULT_INIT_WAKE_UP_TICK_COUNTER_MODULO;
+        gConfigLocal.readyWakeUpTickCounterPeriod1 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1;
+        gConfigLocal.readyWakeUpTickCounterPeriod2 = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_2;
+        gConfigLocal.readyWakeUpTickCounterModulo = CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_MODULO;
+        gConfigLocal.gnssEnable = CONFIG_DEFAULT_GNSS_ENABLE;
+    }
 
 #if defined(MBED_CONF_MBED_TRACE_ENABLE) && MBED_CONF_MBED_TRACE_ENABLE
     // NOTE: the mutex causes output to stop under heavy load, hence
@@ -1996,24 +2381,41 @@ int main() {
 
     printf("\n********** START **********\n");
 
+    // We are running, so set the history marker to normal
+    memcpy(gHistoryMarker, HISTORY_MARKER_NORMAL, sizeof (gHistoryMarker));
+
     heapStats();
 
-    // Initialise everything
-    if (init()) {
+    // Start the event queue in the event thread
+    gpEventThread = new Thread();
+    gpEventThread->start(callback(&gEventQueue, &EventQueue::dispatch_forever));
 
-        for (int x = 0; !gUserButtonPressed; x++) {
-            HAL_IWDG_Refresh(&gWdt);
-            wait_ms(BUTTON_CHECK_INTERVAL_MS);
-        }
+    // Run through the Initialisation and Ready
+    // modes.  Exit is via various forms of sleep
+    // or reset, or most naturally via the user
+    // button switching everything off, in which
+    // case readyMode() will return.
+    initMode();
+    readyMode();
 
-        // Shut everything down
-        deinit();
+    // Shut everything down
+    deinit();
+    deinitPower();
+    ledOff();
 
-        ledOff();
+    // Stop the event queue
+    if (gpEventThread) {
+        gpEventThread->terminate();
+        gpEventThread->join();
+        delete gpEventThread;
+        gpEventThread = NULL;
     }
 
     heapStats();
+
     printf("********** STOP **********\n");
+
+    setSleepLevelOff();
 }
 
 // End of file
