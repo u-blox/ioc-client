@@ -21,7 +21,7 @@
 #include "ioc_m2m.h"
 #include "I2S.h"
 #include "urtp.h"
-#include "ioc_log.h"
+#include "log.h"
 #include "stm32f4xx_hal_iwdg.h"
 #include "battery_gauge_bq27441.h"
 #include "battery_charger_bq24295.h"
@@ -2241,7 +2241,7 @@ static void initMode()
         timeStarted = time(NULL);
         success = init();
         if (!success) {
-            setSleepLevelDeregistered (gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
+            setSleepLevelDeregistered(gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
         }
     }
 
