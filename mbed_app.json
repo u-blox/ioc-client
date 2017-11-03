@@ -1,7 +1,6 @@
 {
     "macros": ["ENABLE_RAMLOG",
-               "ENABLE_LOG_AS_FUNCTION",
-               "MAX_NUM_DATAGRAMS=190",
+               "MAX_NUM_DATAGRAMS=170",
                "TCP_MSS=1376",
                "TCP_WND=11008",
                "PBUF_POOL_SIZE=8",

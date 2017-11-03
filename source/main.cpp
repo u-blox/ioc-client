@@ -16,6 +16,7 @@
 #include "low_power.h"
 #include "factory_configurator_client.h"
 #include "SDBlockDevice.h"
+#include "FATFileSystem.h"
 #include "UbloxPPPCellularInterface.h"
 #include "cloud_client_dm.h"
 #include "ioc_m2m.h"
@@ -160,6 +161,16 @@
 // The minimum Voltage limit that must be set in the battery
 // charger chip to make USB operation reliable.
 #define MIN_INPUT_VOLTAGE_LIMIT_MV  3880
+
+// The partition on the SD card used by us.
+#define IOC_PARTITION "ioc"
+
+// The name of the log file to use; set to NULL if logging
+// to file is not required.
+#define LOG_FILE "/" IOC_PARTITION "/ioc.log"
+
+// The log write interval, only needed if LOG_FILE is not NULL.
+#define LOG_WRITE_INTERVAL_MS 1000
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -310,8 +321,8 @@ static bool startI2s(I2S * pI2s);
 static void stopI2s(I2S * pI2s);
 
 // Audio control.
-static void stopStreaming(AudioLocal *pAudioLocal);
 static bool startStreaming(AudioLocal *pAudioLocal);
+static void stopStreaming(AudioLocal *pAudioLocal);
 
 // GNSS control.
 static bool isLeapYear(int year);
@@ -351,8 +362,8 @@ static void deinit();
 static void setSleepLevelRegistered(time_t sleepDurationSeconds);
 static void setSleepLevelDeregistered(time_t sleepDurationSeconds);
 static void setSleepLevelOff();
-static void initModeWakeUpTickHandler();
-static void initMode();
+static void initialisationModeWakeUpTickHandler();
+static void initialisationMode();
 static void readyModeInstructionReceived();
 static void readyModeWakeUpTickHandler();
 static void readyMode();
@@ -364,6 +375,10 @@ static void readyMode();
 // The SD card, which is instantiated in the Mbed Cloud Client
 // in pal_plat_fileSystem.cpp.
 extern SDBlockDevice sd;
+
+// A file system (noting that Mbed Cloud Client has another
+// file system entirely of its own named "sd").
+FATFileSystem gFs(IOC_PARTITION, &sd);
 
 // The reason we woke up.
 BACKUP_SRAM
@@ -489,6 +504,8 @@ static DigitalOut gLedBlue(LED3, 1);
 static DiagnosticsLocal gDiagnostics = {0};
 static Ticker gSecondTicker;
 static int gStartTime = 0;
+__attribute__ ((section ("CCMRAM")))
+static char gLogBuffer[LOG_STORE_SIZE];
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: DIAGNOSTICS
@@ -651,9 +668,11 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
     const int setOption = 1;
 
     flash();
+    LOG(EVENT_AUDIO_STREAMING_CONNECTION_START, 0);
     printf("Resolving IP address of the audio streaming server...\n");
     if (!gpCellular || !gpCellular->is_connected()) {
         bad();
+        LOG(EVENT_AUDIO_STREAMING_CONNECTION_START_FAILURE, 0);
         printf("Error, network is not ready.\n");
         return false;
     } else {
@@ -670,6 +689,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
             }
         } else {
             bad();
+            LOG(EVENT_AUDIO_STREAMING_CONNECTION_START_FAILURE, 1);
             printf("Error, couldn't resolve IP address of audio streaming server.\n");
             return false;
         }
@@ -680,39 +700,50 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
     switch (pAudio->socketMode) {
         case COMMS_TCP:
             pAudio->sock.pTcpSock = new TCPSocket();
+            LOG(EVENT_SOCKET_OPENING, 0);
             nsapiError = pAudio->sock.pTcpSock->open(gpCellular);
             if (nsapiError != NSAPI_ERROR_OK) {
                 bad();
+                LOG(EVENT_SOCKET_OPENING_FAILURE, nsapiError);
                 printf("Could not open TCP socket to audio streaming server (error %d).\n", nsapiError);
                 return false;
             } else {
+                LOG(EVENT_SOCKET_OPENED, 0);
                 pAudio->sock.pTcpSock->set_timeout(1000);
+                LOG(EVENT_TCP_CONNECTING, 0);
                 printf("Connecting TCP...\n");
                 nsapiError = pAudio->sock.pTcpSock->connect(pAudio->server);
                 if (nsapiError != NSAPI_ERROR_OK) {
                     bad();
+                    LOG(EVENT_TCP_CONNECT_FAILURE, nsapiError);
                     printf("Could not connect TCP socket (error %d).\n", nsapiError);
                     return false;
                 } else {
+                    LOG(EVENT_TCP_CONNECTED, 0);
                     printf("Setting TCP_NODELAY in TCP socket options...\n");
                     // Set TCP_NODELAY (1) in level IPPROTO_TCP (6) to 1
                     nsapiError = pAudio->sock.pTcpSock->setsockopt(6, 1, &setOption, sizeof(setOption));
                     if (nsapiError != NSAPI_ERROR_OK) {
                         bad();
+                        LOG(EVENT_TCP_CONFIGURATION_FAILURE, nsapiError);
                         printf("Could not set TCP socket options (error %d).\n", nsapiError);
                         return false;
                     }
+                    LOG(EVENT_TCP_CONFIGURED, 0);
                 }
             }
             break;
         case COMMS_UDP:
             pAudio->sock.pUdpSock = new UDPSocket();
             nsapiError = pAudio->sock.pUdpSock->open(gpCellular);
+            LOG(EVENT_SOCKET_OPENING, 0);
             if (nsapiError != NSAPI_ERROR_OK) {
                 bad();
+                LOG(EVENT_SOCKET_OPENING_FAILURE, nsapiError);
                 printf("Could not open UDP socket to audio streaming server (error %d).\n", nsapiError);
                 return false;
             }
+            LOG(EVENT_SOCKET_OPENED, 0);
             pAudio->sock.pUdpSock->set_timeout(1000);
             break;
         default:
@@ -731,6 +762,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
 static void stopAudioStreamingConnection(AudioLocal *pAudio)
 {
     flash();
+    LOG(EVENT_AUDIO_STREAMING_CONNECTION_STOP, 0);
     printf("Closing audio server socket...\n");
     switch (pAudio->socketMode) {
         case COMMS_TCP:
@@ -934,6 +966,7 @@ static bool startI2s(I2S * pI2s)
     bool success = false;
 
     flash();
+    LOG(EVENT_I2S_START, 0);
     printf("Starting I2S...\n");
     if ((pI2s->protocol(PHILIPS) == 0) &&
         (pI2s->mode(MASTER_RX, true) == 0) &&
@@ -951,12 +984,18 @@ static bool startI2s(I2S * pI2s)
                 printf("I2S started.\n");
             } else {
                 bad();
+                LOG(EVENT_I2S_START_FAILURE, 2);
                 printf("Unable to start I2S transfer.\n");
             }
+        } else {
+            bad();
+            LOG(EVENT_I2S_START_FAILURE, 1);
+            printf("Unable to start I2S thread.\n");
         }
     } else {
         bad();
-        printf("Unable to start I2S thread.\n");
+        LOG(EVENT_I2S_START_FAILURE, 0);
+        printf("Unable to start I2S driver.\n");
     }
 
     return success;
@@ -966,6 +1005,7 @@ static bool startI2s(I2S * pI2s)
 static void stopI2s(I2S * pI2s)
 {
     flash();
+    LOG(EVENT_I2S_STOP, 0);
     printf("Stopping I2S...\n");
     pI2s->abort_all_transfers();
     if (gpI2sTask != NULL) {
@@ -981,6 +1021,60 @@ static void stopI2s(I2S * pI2s)
  * STATIC FUNCTIONS: AUDIO CONTROL
  * -------------------------------------------------------------- */
 
+// Start audio streaming.
+// Note: here be multiple return statements.
+static bool startStreaming(AudioLocal *pAudioLocal)
+{
+    int retValue;
+
+    // Start the per-second monitor tick and reset the diagnostics
+    LOG(EVENT_AUDIO_STREAMING_START, 0);
+    gSecondTicker.attach_us(callback(&audioMonitor), 1000000);
+    memset(&gDiagnostics, 0, sizeof (gDiagnostics));
+
+    if (!startAudioStreamingConnection(pAudioLocal)) {
+        LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 0);
+        return false;
+    }
+
+    flash();
+    printf ("Setting up URTP...\n");
+    if (!gUrtp.init((void *) &gDatagramStorage, pAudioLocal->fixedGain)) {
+        bad();
+        LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 1);
+        printf ("Unable to start URTP.\n");
+        return false;
+    }
+
+    flash();
+    printf ("Starting task to send audio data...\n");
+    if (gpSendTask == NULL) {
+        gpSendTask = new Thread();
+    }
+    retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
+    if (retValue != osOK) {
+        bad();
+        LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 2);
+        printf ("Error starting task (%d).\n", retValue);
+        return false;
+    }
+
+    if (!startI2s(&gMic)) {
+        LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 3);
+        return false;
+    }
+
+    printf("Now streaming audio.\n");
+
+    pAudioLocal->streamingEnabled = true;
+    if ((pAudioLocal->duration >= 0) && gpEventThread) {
+        printf("Audio streaming will stop in %d second(s).\n", pAudioLocal->duration);
+        gEventQueue.call_in(pAudioLocal->duration * 1000, &stopStreaming, pAudioLocal);
+    }
+
+    return pAudioLocal->streamingEnabled;
+}
+
 // Stop audio streaming.
 static void stopStreaming(AudioLocal *pAudioLocal)
 {
@@ -990,6 +1084,7 @@ static void stopStreaming(AudioLocal *pAudioLocal)
     wait_ms(2000);
 
     flash();
+    LOG(EVENT_AUDIO_STREAMING_STOP, 0);
     printf ("Stopping audio send task...\n");
     gpSendTask->terminate();
     gpSendTask->join();
@@ -1006,55 +1101,6 @@ static void stopStreaming(AudioLocal *pAudioLocal)
 
     printf("Audio streaming stopped.\n");
     pAudioLocal->streamingEnabled = false;
-}
-
-// Start audio streaming.
-// Note: here be multiple return statements.
-static bool startStreaming(AudioLocal *pAudioLocal)
-{
-    int retValue;
-
-    // Start the per-second monitor tick and reset the diagnostics
-    gSecondTicker.attach_us(callback(&audioMonitor), 1000000);
-    memset(&gDiagnostics, 0, sizeof (gDiagnostics));
-
-    if (!startAudioStreamingConnection(pAudioLocal)) {
-        return false;
-    }
-
-    flash();
-    printf ("Setting up URTP...\n");
-    if (!gUrtp.init((void *) &gDatagramStorage, pAudioLocal->fixedGain)) {
-        bad();
-        printf ("Unable to start URTP.\n");
-        return false;
-    }
-
-    flash();
-    printf ("Starting task to send audio data...\n");
-    if (gpSendTask == NULL) {
-        gpSendTask = new Thread();
-    }
-    retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
-    if (retValue != osOK) {
-        bad();
-        printf ("Error starting task (%d).\n", retValue);
-        return false;
-    }
-
-    if (!startI2s(&gMic)) {
-        return false;
-    }
-
-    printf("Now streaming audio.\n");
-
-    pAudioLocal->streamingEnabled = true;
-    if ((pAudioLocal->duration >= 0) && gpEventThread) {
-        printf("Audio streaming will stop in %d second(s).\n", pAudioLocal->duration);
-        gEventQueue.call_in(pAudioLocal->duration * 1000, &stopStreaming, pAudioLocal);
-    }
-
-    return pAudioLocal->streamingEnabled;
 }
 
 /* ----------------------------------------------------------------
@@ -1192,6 +1238,7 @@ static bool gnssUpdate(IocM2mLocation::Location *location)
                             // Second (0 to 60)
                             gpsTime += gGnssBuffer[16];
 
+                            LOG(EVENT_GNSS_TIMESTAMP, gpsTime);
                             location->timestampUnix = gpsTime;
                         }
 
@@ -1210,8 +1257,13 @@ static bool gnssUpdate(IocM2mLocation::Location *location)
                             location->latitudeDegrees = ((float) littleEndianUInt(&(gGnssBuffer[34]))) / 10000000;
                             location->radiusMetres = ((float) littleEndianUInt(&(gGnssBuffer[46]))) / 1000;
                             location->speedMPS = ((float) littleEndianUInt(&(gGnssBuffer[66]))) / 1000;
+                            LOG(EVENT_GNSS_LONGITUDE, littleEndianUInt(&(gGnssBuffer[30])));
+                            LOG(EVENT_GNSS_LATITUDE, littleEndianUInt(&(gGnssBuffer[34])));
+                            LOG(EVENT_GNSS_RADIUS, littleEndianUInt(&(gGnssBuffer[46])));
+                            LOG(EVENT_GNSS_SPEED, littleEndianUInt(&(gGnssBuffer[66])));
                             if (gGnssBuffer[26] == 0x03) {
                                 location->altitudeMetres = ((float) littleEndianUInt(&(gGnssBuffer[42]))) / 1000;
+                                LOG(EVENT_GNSS_ALTITUDE, littleEndianUInt(&(gGnssBuffer[42])));
                             }
                             success = true;
                         }
@@ -1326,6 +1378,7 @@ static void deleteObject(IocM2mObjectId id)
 // object.
 static void setPowerControl(bool value)
 {
+    LOG(EVENT_SET_POWER_CONTROL, value);
     printf("Power control set to %d.\n", value);
 
     // Something has happened, tell Ready mode about it
@@ -1374,6 +1427,7 @@ static void executeResetTemperatureMinMax()
     // Something has happened, tell Ready mode about it
     readyModeInstructionReceived();
 
+    LOG(EVENT_RESET_TEMPERATURE_MIN_MAX, 0);
     printf("Received min/max temperature reset.\n");
 
     gTemperatureLocal.minC = gTemperatureLocal.nowC;
@@ -1398,12 +1452,15 @@ static void setConfigData(const IocM2mConfig::Config *data)
     /// Handle GNSS configuration changes
     if (!gpGnss && data->gnssEnable) {
         gPendingGnssStop = false;
+        LOG(EVENT_GNSS_START, 0);
         gpGnss = new GnssSerial();
         if (!gpGnss->init()) {
+            LOG(EVENT_GNSS_START_FAILURE, 0);
             delete gpGnss;
             gpGnss = NULL;
         }
     } else if (gpGnss && !data->gnssEnable) {
+        LOG(EVENT_GNSS_STOP_PENDING, 0);
         gPendingGnssStop = true;
     }
 
@@ -1415,6 +1472,11 @@ static void setConfigData(const IocM2mConfig::Config *data)
     gConfigLocal.readyWakeUpTickCounterPeriod2 = (time_t) data->readyWakeUpTickCounterPeriod2;
     gConfigLocal.readyWakeUpTickCounterModulo = data->readyWakeUpTickCounterModulo;
     gConfigLocal.gnssEnable = data->gnssEnable;
+    LOG(EVENT_SET_INIT_WAKE_UP_TICK_COUNTER_PERIOD, gConfigLocal.initWakeUpTickCounterPeriod);
+    LOG(EVENT_SET_INIT_WAKE_UP_TICK_COUNTER_MODULO, gConfigLocal.initWakeUpTickCounterModulo);
+    LOG(EVENT_SET_READY_WAKE_UP_TICK_COUNTER_PERIOD1, gConfigLocal.readyWakeUpTickCounterPeriod1);
+    LOG(EVENT_SET_READY_WAKE_UP_TICK_COUNTER_PERIOD2, gConfigLocal.readyWakeUpTickCounterPeriod2);
+    LOG(EVENT_SET_READY_WAKE_UP_TICK_COUNTER_MODULO, gConfigLocal.readyWakeUpTickCounterModulo);
 }
 
 // Convert a local config data structure to the IocM2mConfig one.
@@ -1451,13 +1513,18 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
     gAudioLocalPending.duration = (int) m2mAudio->duration;
     gAudioLocalPending.socketMode = m2mAudio->audioCommunicationsMode;
     gAudioLocalPending.audioServerUrl = m2mAudio->audioServerUrl;
+    LOG(EVENT_SET_AUDIO_CONFIG_FIXED_GAIN, gAudioLocalPending.fixedGain);
+    LOG(EVENT_SET_AUDIO_CONFIG_DURATION, gAudioLocalPending.duration);
+    LOG(EVENT_SET_AUDIO_CONFIG_COMUNICATIONS_MODE, gAudioLocalPending.socketMode);
     if (m2mAudio->streamingEnabled && !streamingWasEnabled) {
+        LOG(EVENT_SET_AUDIO_CONFIG_STREAMING_ENABLED, 0);
         // Make a copy of the current audio settings so that
         // the streaming process cannot be affected by server writes
         // unless it is switched off and on again
         gAudioLocalActive = gAudioLocalPending;
         gAudioLocalPending.streamingEnabled = startStreaming(&gAudioLocalActive);
     } else if (!m2mAudio->streamingEnabled && streamingWasEnabled) {
+        LOG(EVENT_SET_AUDIO_CONFIG_STREAMING_DISABLED, 0);
         stopStreaming(&gAudioLocalActive);
         gAudioLocalPending.streamingEnabled = gAudioLocalActive.streamingEnabled;
         // Update the diagnostics straight away as they will have been
@@ -1518,18 +1585,22 @@ static void objectUpdate()
     char fault;
 
     // First do the observable resources for the Device object
+    LOG(EVENT_LWM2M_OBJECT_UPDATE, 0);
     flash();
     if (gpCloudClientDm) {
         if (gpBatteryGauge && gpBatteryGauge->isBatteryDetected()) {
             if (gpBatteryGauge->getVoltage(&voltageMV)) {
+                LOG(EVENT_BATTERY_VOLTAGE, voltageMV);
                 gpCloudClientDm->setDeviceObjectVoltage(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY,
                                                         voltageMV);
             }
             if (gpBatteryGauge->getCurrent(&currentMA)) {
+                LOG(EVENT_BATTERY_CURRENT, currentMA);
                 gpCloudClientDm->setDeviceObjectCurrent(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY,
                                                         currentMA);
             }
             if (gpBatteryGauge->getRemainingPercentage(&batteryLevelPercent)) {
+                LOG(EVENT_BATTERY_PERCENTAGE, batteryLevelPercent);
                 gpCloudClientDm->setDeviceObjectBatteryLevel(batteryLevelPercent);
             }
         }
@@ -1537,9 +1608,11 @@ static void objectUpdate()
             // Make sure we are lined up with the USB power state
             if (gpBatteryCharger->isExternalPowerPresent() &&
                 !gpCloudClientDm->existsDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB)) {
+                LOG(EVENT_EXTERNAL_POWER_ON, 0);
                 gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB);
             } else if (!gpBatteryCharger->isExternalPowerPresent() &&
                        gpCloudClientDm->existsDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB)) {
+                LOG(EVENT_EXTERNAL_POWER_OFF, 0);
                 gpCloudClientDm->deleteDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_USB);
             }
 
@@ -1548,24 +1621,39 @@ static void objectUpdate()
             fault &= ~BatteryChargerBq24295::CHARGER_FAULT_WATCHDOG_EXPIRED;
             if (fault != BatteryChargerBq24295::CHARGER_FAULT_NONE) {
                 batteryStatus = CloudClientDm::BATTERY_STATUS_FAULT;
+                LOG(EVENT_BATTERY_STATUS_FAULT, fault);
             } else {
                 if (batteryLevelPercent < LOW_BATTERY_WARNING_PERCENTAGE) {
                     batteryStatus = CloudClientDm::BATTERY_STATUS_LOW_BATTERY;
+                    LOG(EVENT_BATTERY_STATUS_LOW_BATTERY, batteryLevelPercent);
                 } else {
                     switch (gpBatteryCharger->getChargerState()) {
                         case BatteryChargerBq24295::CHARGER_STATE_DISABLED:
+                            LOG(EVENT_BATTERY_STATUS_NORMAL, BatteryChargerBq24295::CHARGER_STATE_DISABLED);
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_NORMAL;
+                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_NO_EXTERNAL_POWER:
+                            LOG(EVENT_BATTERY_STATUS_NORMAL, BatteryChargerBq24295::CHARGER_STATE_NO_EXTERNAL_POWER);
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_NORMAL;
+                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_NOT_CHARGING:
+                            LOG(EVENT_BATTERY_STATUS_NORMAL, BatteryChargerBq24295::CHARGER_STATE_NOT_CHARGING);
                             batteryStatus = CloudClientDm::BATTERY_STATUS_NORMAL;
                             break;
                         case BatteryChargerBq24295::CHARGER_STATE_PRECHARGE:
+                            LOG(EVENT_BATTERY_STATUS_CHARGING, BatteryChargerBq24295::CHARGER_STATE_PRECHARGE);
+                            batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
+                            break;
                         case BatteryChargerBq24295::CHARGER_STATE_FAST_CHARGE:
+                            LOG(EVENT_BATTERY_STATUS_CHARGING, BatteryChargerBq24295::CHARGER_STATE_FAST_CHARGE);
                             batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING;
                             break;
                         case BatteryChargerBq24295::CHARGER_STATE_COMPLETE:
+                            LOG(EVENT_BATTERY_STATUS_CHARGING_COMPLETE, BatteryChargerBq24295::CHARGER_STATE_COMPLETE);
                             batteryStatus = CloudClientDm::BATTERY_STATUS_CHARGING_COMPLETE;
                             break;
                         default:
+                            LOG(EVENT_BATTERY_STATUS_UNKNOWN, 0);
                             batteryStatus = CloudClientDm::BATTERY_STATUS_UNKNOWN;
                             break;
                     }
@@ -1579,6 +1667,7 @@ static void objectUpdate()
     // we go observing it.
     if (gPendingGnssStop) {
         if (gpGnss) {
+            LOG(EVENT_GNSS_STOP, 0);
             delete gpGnss;
             gpGnss = NULL;
         }
@@ -1599,6 +1688,7 @@ static void cloudClientRegisteredCallback()
 {
     flash();
     good();
+    LOG(EVENT_CLOUD_CLIENT_REGISTERED, 0);
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 
     // The registration process will update system time so
@@ -1610,6 +1700,7 @@ static void cloudClientRegisteredCallback()
 static void cloudClientDeregisteredCallback()
 {
     flash();
+    LOG(EVENT_CLOUD_CLIENT_DEREGISTERED, 0);
     printf("Mbed Cloud Client deregistered.\n");
 }
 
@@ -1621,6 +1712,7 @@ static void cloudClientDeregisteredCallback()
 static void buttonCallback()
 {
     gUserButtonPressed = true;
+    LOG(EVENT_BUTTON_PRESSED, 0);
 }
 
 // Normally we feed the watchdog in task-context
@@ -1664,26 +1756,32 @@ static ResetReason getResetReason()
 static void initPower()
 {
     flash();
+    LOG(EVENT_I2C_START, 0);
     gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
+    LOG(EVENT_BATTERY_CHARGER_BQ24295_START, 0);
     gpBatteryCharger = new BatteryChargerBq24295();
     if (gpBatteryCharger->init(gpI2C)) {
         if (!gpBatteryCharger->enableCharging() ||
             !gpBatteryCharger->setInputVoltageLimit(MIN_INPUT_VOLTAGE_LIMIT_MV) ||
             !gpBatteryCharger->setWatchdog(0)) {
             bad();
+            LOG(EVENT_BATTERY_CHARGER_BQ24295_CONFIG_FAILURE, 0);
             printf ("WARNING: unable to completely configure battery charger.\n");
         }
     } else {
         bad();
+        LOG(EVENT_BATTERY_CHARGER_BQ24295_START_FAILURE, 0);
         printf ("WARNING: unable to initialise battery charger.\n");
         delete gpBatteryCharger;
         gpBatteryCharger = NULL;
     }
+    LOG(EVENT_BATTERY_GAUGE_BQ27441_START, 0);
     gpBatteryGauge = new BatteryGaugeBq27441();
     if (gpBatteryGauge->init(gpI2C)) {
         if (!gpBatteryGauge->disableBatteryDetect() ||
             !gpBatteryGauge->enableGauge()) {
             bad();
+            LOG(EVENT_BATTERY_GAUGE_BQ27441_CONFIG_FAILURE, 0);
             printf ("WARNING: unable to completely configure battery gauge.\n");
         }
         // Reset the temperature min/max readings which are read from the gauge
@@ -1693,6 +1791,7 @@ static void initPower()
         }
     } else {
         bad();
+        LOG(EVENT_BATTERY_GAUGE_BQ27441_START_FAILURE, 0);
         printf ("WARNING: unable to initialise battery gauge (maybe the battery is not connected?).\n");
         delete gpBatteryGauge;
         gpBatteryGauge = NULL;
@@ -1700,6 +1799,7 @@ static void initPower()
 
     // Only need I2C for battery stuff, so if neither work just delete it
     if (!gpBatteryGauge && !gpBatteryCharger) {
+        LOG(EVENT_I2C_STOP, 0);
         delete gpI2C;
         gpI2C = NULL;
     }
@@ -1710,14 +1810,16 @@ static void deinitPower()
 {
     if (gpBatteryCharger) {
         flash();
-        printf("Stopping battery charger...");
+        LOG(EVENT_BATTERY_CHARGER_BQ24295_STOP, 0);
+        printf("Stopping battery charger...\n");
         delete gpBatteryCharger;
         gpBatteryCharger = NULL;
     }
 
     if (gpBatteryGauge) {
         flash();
-        printf("Stopping battery gauge...");
+        LOG(EVENT_BATTERY_GAUGE_BQ27441_STOP, 0);
+        printf("Stopping battery gauge...\n");
         gpBatteryGauge->disableGauge();
         delete gpBatteryGauge;
         gpBatteryGauge = NULL;
@@ -1725,10 +1827,54 @@ static void deinitPower()
 
     if (gpI2C) {
         flash();
-        printf("Stopping I2C...");
+        LOG(EVENT_I2C_STOP, 0);
+        printf("Stopping I2C...\n");
         delete gpI2C;
         gpI2C = NULL;
     }
+}
+
+// Initialise file system.
+static bool initFileSystem()
+{
+    int x;
+
+    flash();
+    LOG(EVENT_SD_CARD_START, 0);
+    printf("Starting SD card...\n");
+    x = sd.init();
+    if (x == 0) {
+        printf("Mounting file system...\n");
+        gFs.mount(&sd);
+    } else {
+        bad();
+        LOG(EVENT_SD_CARD_START_FAILURE, 0);
+        printf("Error initialising SD card (%d).\n", x);
+        return false;
+    }
+    printf("SD card started.\n");
+
+    if (LOG_FILE != NULL) {
+        flash();
+        printf("Starting logging to file...\n");
+        if (initLogFile(LOG_FILE)) {
+            gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
+        } else {
+            printf("WARNING: unable to initialise logging to file.\n");
+        }
+    }
+
+    return true;
+}
+
+// Shutdown file system
+static void deinitFileSystem()
+{
+    flash();
+    LOG(EVENT_SD_CARD_STOP, 0);
+    printf("Closing SD card and unmounting file system...\n");
+    sd.deinit();
+    gFs.unmount();
 }
 
 // Initialise everything, bringing us to SleepLevel REGISTERED.
@@ -1742,16 +1888,13 @@ static bool init()
     int x = 0;
     int y = 0;
 
+    LOG(EVENT_WATCHDOG_START, 0);
     printf("Starting watchdog timer (%d seconds)...\n", WATCHDOG_WAKEUP_MS / 1000);
     if (HAL_IWDG_Init(&gWdt) != HAL_OK) {
         bad();
+        LOG(EVENT_WATCHDOG_START_FAILURE, 0);
         printf("WARNING: unable to initialise watchdog, it is NOT running.\n");
     }
-
-    flash();
-    printf("Starting logging...\n");
-    initLog();
-    LOG(EVENT_LOG_START, gResetReason);
 
     // Set up defaults
     gAudioLocalPending.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
@@ -1768,10 +1911,12 @@ static bool init()
 
     if (CONFIG_DEFAULT_GNSS_ENABLE) {
         flash();
+        LOG(EVENT_GNSS_START, 0);
         printf("Starting GNSS...\n");
         gpGnss = new GnssSerial();
         if (!gnssInit(gpGnss)) {
             bad();
+            LOG(EVENT_GNSS_START_FAILURE, 0);
             printf ("WARNING: unable to initialise GNSS.\n");
             delete gpGnss;
             gpGnss = NULL;
@@ -1779,20 +1924,12 @@ static bool init()
     }
 
     flash();
-    printf("Starting SD card...\n");
-    x = sd.init();
-    if (x != 0) {
-        bad();
-        printf("Error initialising SD card (%d).\n", x);
-        return false;
-    }
-    printf("SD card started.\n");
-
-    flash();
+    LOG(EVENT_CLOUD_CLIENT_FILE_STORAGE_INIT, 0);
     printf("Initialising Mbed Cloud Client file storage...\n");
     fcc_status_e status = fcc_init();
     if(status != FCC_STATUS_SUCCESS) {
         bad();
+        LOG(EVENT_CLOUD_CLIENT_FILE_STORAGE_INIT_FAILURE, 0);
         printf("Error initialising Mbed Cloud Client file storage (%d).\n", status);
         return false;
     }
@@ -1814,23 +1951,27 @@ static bool init()
             HAL_IWDG_Refresh(&gWdt);
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
             flash();
+            LOG(EVENT_CLOUD_CLIENT_DEVELOPER_FLOW_START, 0);
             printf("Starting Mbed Cloud Client developer flow...\n");
             status = fcc_developer_flow();
             if (status == FCC_STATUS_KCM_FILE_EXIST_ERROR) {
                 printf("Mbed Cloud Client developer credentials already exist.\n");
             } else if (status != FCC_STATUS_SUCCESS) {
                 bad();
+                LOG(EVENT_CLOUD_CLIENT_DEVELOPER_FLOW_START_FAILURE, 0);
                 printf("Failed to load Mbed Cloud Client developer credentials.\n");
                 return false;
             }
 #endif
 
             flash();
+            LOG(EVENT_CLOUD_CLIENT_VERIFY_CONFIG_FILES, 0);
             printf("Checking Mbed Cloud Client configuration files...\n");
             status = fcc_verify_device_configured_4mbed_cloud();
             if (status == FCC_STATUS_SUCCESS) {
                 cloudClientConfigGood = true;
             } else {
+                LOG(EVENT_CLOUD_CLIENT_VERIFY_CONFIG_FILES_FAILURE, 0);
                 printf("Device not configured for Mbed Cloud Client.\n");
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
                 // Use this function when you want to clear storage from all
@@ -1838,10 +1979,12 @@ static bool init()
                 // After this operation device must be injected again by using
                 // factory tool or developer certificate.
                 flash();
+                LOG(EVENT_CLOUD_CLIENT_RESET_STORAGE, 0);
                 printf("Resetting Mbed Cloud Client storage to an empty state...\n");
                 fcc_status_e deleteStatus = fcc_storage_delete();
                 if (deleteStatus != FCC_STATUS_SUCCESS) {
                     bad();
+                    LOG(EVENT_CLOUD_CLIENT_RESET_STORAGE_FAILURE, 0);
                     printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
                     return false;
                 }
@@ -1853,13 +1996,15 @@ static bool init()
         srand(time(NULL));
 
         flash();
-        printf("Initialising Mbed Cloud Client...\n");
+        LOG(EVENT_CLOUD_CLIENT_INIT_DM, 0);
+        printf("Initialising Mbed Cloud Client DM...\n");
         gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
                                             &cloudClientRegisteredCallback,
                                             &cloudClientDeregisteredCallback);
 
         flash();
         printf("Configuring the LWM2M Device object...\n");
+        LOG(EVENT_CLOUD_CLIENT_CONFIG_DM, 0);
         if (/* TODO: commented out while I try to figure out what's upsetting
                fcc_verify_device_configured_4mbed_cloud()
             gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
@@ -1884,11 +2029,13 @@ static bool init()
 
     if (!dmObjectConfigGood) {
         bad();
+        LOG(EVENT_CLOUD_CLIENT_CONFIG_DM_FAILURE, 0);
         printf("Unable to configure the Device object after %d attempt(s).\n", y - 1);
         return false;
     }
 
     flash();
+    LOG(EVENT_CREATE_LWM2M_OBJECTS, 0);
     printf("Creating all the other LWM2M objects...\n");
     // Create temporary storage for copying things around
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof(gObjectList[0]); x++) {
@@ -1920,21 +2067,25 @@ static bool init()
                                                          MBED_CONF_APP_OBJECT_DEBUG_ON));
 
     flash();
+    LOG(EVENT_CLOUD_CLIENT_START, 0);
     printf("Starting Mbed Cloud Client...\n");
     gpCloudClientGlobalUpdateCallback = new UpdateCallback();
     if (!gpCloudClientDm->start(gpCloudClientGlobalUpdateCallback)) {
         bad();
+        LOG(EVENT_CLOUD_CLIENT_START_FAILURE, 0);
         printf("Error starting Mbed Cloud Client.\n");
         return false;
     }
 
     HAL_IWDG_Refresh(&gWdt);
     flash();
+    LOG(EVENT_MODEM_START, 0);
     printf("Initialising modem...\n");
     gpCellular = new UbloxPPPCellularInterface(MDMTXD, MDMRXD, MODEM_BAUD_RATE,
                                                MBED_CONF_APP_MODEM_DEBUG_ON);
     if (!gpCellular->init()) {
         bad();
+        LOG(EVENT_MODEM_START_FAILURE, 0);
         printf("Unable to initialise cellular.\n");
         return false;
     }
@@ -1943,22 +2094,28 @@ static bool init()
     gSecondTicker.attach_us(callback(&watchdogFeedCallback), 1000000);
 
     flash();
+    LOG(EVENT_NETWORK_CONNECTING, 0);
     printf("Please wait up to 180 seconds to connect to the cellular packet network...\n");
     if (gpCellular->connect() != NSAPI_ERROR_OK) {
         gSecondTicker.detach();
         bad();
+        LOG(EVENT_NETWORK_CONNECTION_FAILURE, 0);
         printf("Unable to connect to the cellular packet network.\n");
         return false;
     }
     gSecondTicker.detach();
+    LOG(EVENT_NETWORK_CONNECTED, 0);
 
     flash();
+    LOG(EVENT_CLOUD_CLIENT_CONNECTING, 0);
     printf("Connecting to LWM2M server...\n");
     if (!gpCloudClientDm->connect(gpCellular)) {
         bad();
+        LOG(EVENT_CLOUD_CLIENT_CONNECT_FAILURE, 0);
         printf("Unable to connect to LWM2M server.\n");
         return false;
     } else {
+        LOG(EVENT_CLOUD_CLIENT_CONNECTED, 0);
         printf("Connected to LWM2M server, please wait for registration to complete...\n");
         // !!! SUCCESS !!!
     }
@@ -1980,11 +2137,14 @@ static void deinit()
 
     if (gpCloudClientDm != NULL) {
         flash();
+        LOG(EVENT_CLOUD_CLIENT_DISCONNECTING, 0);
         printf("Stopping Mbed Cloud Client...\n");
         gpCloudClientDm->stop();
+        LOG(EVENT_CLOUD_CLIENT_DISCONNECTED, 0);
     }
 
     flash();
+    LOG(EVENT_DELETE_LWM2M_OBJECTS, 0);
     printf("Deleting LWM2M objects...\n");
     for (unsigned int x = 0; x < sizeof (gObjectList) / sizeof (gObjectList[0]); x++) {
         deleteObject((IocM2mObjectId) x);
@@ -1992,6 +2152,7 @@ static void deinit()
 
     if (gpCloudClientDm != NULL) {
         flash();
+        LOG(EVENT_CLOUD_CLIENT_DELETE, 0);
         printf("Deleting Mbed Cloud Client...\n");
         delete gpCloudClientDm;
         gpCloudClientDm = NULL;
@@ -2004,18 +2165,17 @@ static void deinit()
     if (gpCellular != NULL) {
         HAL_IWDG_Refresh(&gWdt);
         flash();
+        LOG(EVENT_NETWORK_DISCONNECTING, 0);
         printf("Disconnecting from the cellular packet network...\n");
         gpCellular->disconnect();
         flash();
+        LOG(EVENT_NETWORK_DISCONNECTED, 0);
+        LOG(EVENT_MODEM_STOP, 0);
         printf("Stopping modem...\n");
         gpCellular->deinit();
         delete gpCellular;
         gpCellular = NULL;
     }
-
-    flash();
-    printf("Closing SD card...\n");
-    sd.deinit();
 
     if (gpUserButton != NULL) {
         flash();
@@ -2026,16 +2186,11 @@ static void deinit()
 
     if (gpGnss) {
         flash();
+        LOG(EVENT_GNSS_STOP, 0);
         printf ("Stopping GNSS...\n");
         delete gpGnss;
         gpGnss = NULL;
     }
-
-    HAL_IWDG_Refresh(&gWdt);
-    flash();
-    printf("Printing the log...\n");
-    LOG(EVENT_LOG_STOP, 0);
-    printLog();
 
     if (gStartTime > 0) {
         printf("Up for %ld second(s).\n", time(NULL) - gStartTime);
@@ -2156,6 +2311,7 @@ static void setSleepLevelRegistered(time_t sleepDurationSeconds)
     gTimeEnterSleep = time(NULL);
     gTimeLeaveSleep = gTimeEnterSleep + sleepDurationSeconds;
 
+    LOG(EVENT_SLEEP_LEVEL_REGISTERED, sleepDurationSeconds);
     printf("Going to REGISTERED_SLEEP for %d second(s), until %s",
            (int) (sleepDurationSeconds), ctime(&gTimeLeaveSleep));
 
@@ -2166,6 +2322,7 @@ static void setSleepLevelRegistered(time_t sleepDurationSeconds)
         }
 
         HAL_IWDG_Refresh(&gWdt);
+        LOG(EVENT_ENTER_STOP, sleepTimeLeft);
         gLowPower.enterStop(sleepTimeLeft);
     }
 
@@ -2178,6 +2335,7 @@ static void setSleepLevelDeregistered(time_t sleepDurationSeconds)
     gTimeEnterSleep = time(NULL);
     gTimeLeaveSleep = gTimeEnterSleep + sleepDurationSeconds;
 
+    LOG(EVENT_SLEEP_LEVEL_DEREGISTERED, sleepDurationSeconds);
     printf("Going to DEREGISTERED_SLEEP for %d second(s), until %s",
            (int) (sleepDurationSeconds), ctime(&gTimeLeaveSleep));
 
@@ -2187,6 +2345,7 @@ static void setSleepLevelDeregistered(time_t sleepDurationSeconds)
     }
     memcpy(gHistoryMarker, HISTORY_MARKER_STANDBY, sizeof (gHistoryMarker));
     HAL_IWDG_Refresh(&gWdt);
+    LOG(EVENT_ENTER_STANDBY, sleepDurationSeconds * 1000);
     gLowPower.enterStandby(sleepDurationSeconds * 1000);
     // The wake-up process is handled on entry to main()
 }
@@ -2196,15 +2355,18 @@ static void setSleepLevelDeregistered(time_t sleepDurationSeconds)
 // immediately go back to sleep again)
 static void setSleepLevelOff()
 {
+    LOG(EVENT_SLEEP_LEVEL_OFF, 0);
     memcpy(gHistoryMarker, HISTORY_MARKER_OFF, sizeof (gHistoryMarker));
     HAL_IWDG_Refresh(&gWdt);
+    LOG(EVENT_ENTER_STANDBY, MAX_SLEEP_SECONDS * 1000);
     gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
 }
 
 // The Initialisation mode wake-up tick handler.
-static void initModeWakeUpTickHandler()
+static void initialisationModeWakeUpTickHandler()
 {
     gWakeUpTickCounter++;
+    LOG(EVENT_INITIALISATION_MODE_WAKE_UP_TICK, gWakeUpTickCounter);
     if (gWakeUpTickCounter >= gConfigLocal.initWakeUpTickCounterModulo) {
         gWakeUpTickCounter = 0;
         if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
@@ -2215,19 +2377,21 @@ static void initModeWakeUpTickHandler()
             // Otherwise, enter standby with a short
             // timer, which will reset us to start trying
             // again
+            LOG(EVENT_ENTER_STANDBY, 100);
             gLowPower.enterStandby(100);
         }
     }
 }
 
 // Perform Initialisation mode.
-static void initMode()
+static void initialisationMode()
 {
     bool success = false;
     time_t timeStarted;
 
     // Add the Initialisation mode wake-up handler
-    gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.initWakeUpTickCounterPeriod * 1000, initModeWakeUpTickHandler);
+    LOG(EVENT_INITIALISATION_MODE_START, 0);
+    gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.initWakeUpTickCounterPeriod * 1000, initialisationModeWakeUpTickHandler);
 
     // Initialise everything.  There are three possible outcomes:
     //
@@ -2239,7 +2403,7 @@ static void initMode()
     //   in the appropriate way.
     while (!success) {
         timeStarted = time(NULL);
-        success = init();
+        success = initFileSystem() && init();
         if (!success) {
             setSleepLevelDeregistered(gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
         }
@@ -2254,9 +2418,11 @@ static void initMode()
 // has been received from the server.
 static void readyModeInstructionReceived()
 {
+    LOG(EVENT_READY_MODE_INSTRUCTION_RECEIVED, 0);
     if (gpBatteryCharger && gpBatteryCharger->isExternalPowerPresent()) {
         // If there is external power, reset the tick counter
         // so that we stay awake
+        LOG(EVENT_READY_MODE_WAKE_UP_TICK_COUNTER_RESET, 0);
         gWakeUpTickCounter = 0;
     }
 }
@@ -2265,6 +2431,7 @@ static void readyModeInstructionReceived()
 static void readyModeWakeUpTickHandler()
 {
     gWakeUpTickCounter++;
+    LOG(EVENT_READY_MODE_WAKE_UP_TICK, gWakeUpTickCounter);
     if (gWakeUpTickCounter >= gConfigLocal.readyWakeUpTickCounterModulo) {
         gWakeUpTickCounter = 0;
         if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
@@ -2289,6 +2456,7 @@ static void readyModeWakeUpTickHandler()
 static void readyMode()
 {
     // Switch to the Ready mode wake-up handler and zero the tick count
+    LOG(EVENT_READY_MODE_START, 0);
     gWakeUpTickCounter = 0;
     gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod1 * 1000, readyModeWakeUpTickHandler);
 
@@ -2323,14 +2491,23 @@ int main()
         NVIC_SystemReset();
     }
 
+    flash();
+    printf("Starting logging...\n");
+    if (!initLog(gLogBuffer, NULL)) {
+        printf("WARNING: unable to initialise logging.\n");
+    }
+
+    LOG(EVENT_SYSTEM_START, gResetReason);
+
     // Bring up the battery charger and battery gauge
     initPower();
 
     // If we should be off, and there is no external
     // power to keep us going, go straight back to sleep
     if ((memcmp (gHistoryMarker, HISTORY_MARKER_OFF, sizeof (HISTORY_MARKER_OFF)) == 0) &&
-         gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
+        gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
         HAL_IWDG_Refresh(&gWdt);
+        LOG(EVENT_ENTER_STANDBY, MAX_SLEEP_SECONDS * 1000);
         gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
     }
 
@@ -2346,6 +2523,7 @@ int main()
             if (sleepTimeLeft > MAX_SLEEP_SECONDS) {
                 sleepTimeLeft = MAX_SLEEP_SECONDS;
             }
+            LOG(EVENT_ENTER_STANDBY, sleepTimeLeft);
             gLowPower.enterStandby(sleepTimeLeft);
         }
         printf("Awake from DEREGISTERED_SLEEP after %d second(s).\n",
@@ -2395,7 +2573,7 @@ int main()
     // or reset, or most naturally via the user
     // button switching everything off, in which
     // case readyMode() will return.
-    initMode();
+    initialisationMode();
     readyMode();
 
     // Shut everything down
@@ -2413,6 +2591,18 @@ int main()
 
     heapStats();
 
+    HAL_IWDG_Refresh(&gWdt);
+    flash();
+    printf("Printing the log...\n");
+    // Run a ticker to feed the watchdog while we print out the log
+    gSecondTicker.attach_us(callback(&watchdogFeedCallback), 1000000);
+    printLog();
+    gSecondTicker.detach();
+    printf("Stopping logging...\n");
+    deinitLog();
+    deinitFileSystem();
+
+    LOG(EVENT_SYSTEM_STOP, 0);
     printf("********** STOP **********\n");
 
     setSleepLevelOff();
