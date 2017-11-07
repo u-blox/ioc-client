@@ -31,7 +31,7 @@
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
 
-/** The number of log entries.
+/** The number of log entries (must be 1 or greater).
  */
 #ifndef MAX_NUM_LOG_ENTRIES
 # define MAX_NUM_LOG_ENTRIES 500

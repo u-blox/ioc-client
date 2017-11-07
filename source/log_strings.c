@@ -9,7 +9,6 @@ const char *gLogStrings[] = {
     "  USER_2",
     "  USER_3",
     "  LOG_START",
-    "  LOG_ENTRIES_LOST",
     "  LOG_STOP",
     "  SYSTEM_START",
     "  SYSTEM_STOP",

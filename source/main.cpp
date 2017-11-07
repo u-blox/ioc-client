@@ -93,7 +93,7 @@
 #define DEVICE_OBJECT_SOFTWARE_VERSION SOFTWARE_VERSION
 #define DEVICE_OBJECT_FIRMWARE_VERSION "0"
 #define DEVICE_OBJECT_MEMORY_TOTAL     256
-#define DEVICE_OBJECT_UTC_OFFSET       "UTC+0"
+#define DEVICE_OBJECT_UTC_OFFSET       "+00:00"
 #define DEVICE_OBJECT_TIMEZONE         "+513030-0000731" // London
 
 // The default audio setup data.
@@ -355,6 +355,9 @@ static void watchdogFeedCallback();
 static ResetReason getResetReason();
 static void initPower();
 static void deinitPower();
+static bool initFileSystem();
+static void deinitFileSystem();
+static void printFccError();
 static bool init();
 static void deinit();
 
@@ -1877,6 +1880,26 @@ static void deinitFileSystem()
     gFs.unmount();
 }
 
+// Get the error messages from Cloud Client FCC
+// and print them out for feedback to the mbed Cloud people.
+static void printFccError()
+{
+    fcc_output_info_s *pFccError;
+    fcc_warning_info_s *pFccWarning;
+
+    pFccError = fcc_get_error_and_warning_data();
+    if ((pFccError != NULL) && (pFccError->error_string_info != NULL)) {
+        printf("FCC reported the follow error: \"%s\".\n", pFccError->error_string_info);
+    }
+    for (unsigned int z = 0; z < pFccError->size_of_warning_info_list; z++) {
+        pFccWarning = pFccError->head_of_warning_list;
+        if ((pFccWarning != NULL) && (pFccWarning->warning_info_string != NULL)) {
+            printf("FCC reported the following warning: %d \"%s\".\n", z + 1, pFccWarning->warning_info_string);
+        }
+        pFccWarning = pFccWarning->next;
+    }
+}
+
 // Initialise everything, bringing us to SleepLevel REGISTERED.
 // If you add anything here, be sure to add the opposite
 // to deinit().
@@ -1929,6 +1952,7 @@ static bool init()
     fcc_status_e status = fcc_init();
     if(status != FCC_STATUS_SUCCESS) {
         bad();
+        printFccError();
         LOG(EVENT_CLOUD_CLIENT_FILE_STORAGE_INIT_FAILURE, 0);
         printf("Error initialising Mbed Cloud Client file storage (%d).\n", status);
         return false;
@@ -1958,6 +1982,7 @@ static bool init()
                 printf("Mbed Cloud Client developer credentials already exist.\n");
             } else if (status != FCC_STATUS_SUCCESS) {
                 bad();
+                printFccError();
                 LOG(EVENT_CLOUD_CLIENT_DEVELOPER_FLOW_START_FAILURE, 0);
                 printf("Failed to load Mbed Cloud Client developer credentials.\n");
                 return false;
@@ -1971,8 +1996,10 @@ static bool init()
             if (status == FCC_STATUS_SUCCESS) {
                 cloudClientConfigGood = true;
             } else {
+                printFccError();
                 LOG(EVENT_CLOUD_CLIENT_VERIFY_CONFIG_FILES_FAILURE, 0);
                 printf("Device not configured for Mbed Cloud Client.\n");
+
 #ifdef MBED_CONF_APP_DEVELOPER_MODE
                 // Use this function when you want to clear storage from all
                 // the factory-tool generated data and user data.
@@ -1984,6 +2011,7 @@ static bool init()
                 fcc_status_e deleteStatus = fcc_storage_delete();
                 if (deleteStatus != FCC_STATUS_SUCCESS) {
                     bad();
+                    printFccError();
                     LOG(EVENT_CLOUD_CLIENT_RESET_STORAGE_FAILURE, 0);
                     printf("Failed to delete Mbed Cloud Client storage - %d\n", deleteStatus);
                     return false;
@@ -2005,11 +2033,9 @@ static bool init()
         flash();
         printf("Configuring the LWM2M Device object...\n");
         LOG(EVENT_CLOUD_CLIENT_CONFIG_DM, 0);
-        if (/* TODO: commented out while I try to figure out what's upsetting
-               fcc_verify_device_configured_4mbed_cloud()
-            gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
+        if (gpCloudClientDm->setDeviceObjectStaticDeviceType(DEVICE_OBJECT_DEVICE_TYPE) &&
             gpCloudClientDm->setDeviceObjectStaticSerialNumber(DEVICE_OBJECT_SERIAL_NUMBER) &&
-            gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) && */
+            gpCloudClientDm->setDeviceObjectStaticHardwareVersion(DEVICE_OBJECT_HARDWARE_VERSION) &&
             gpCloudClientDm->setDeviceObjectSoftwareVersion(DEVICE_OBJECT_SOFTWARE_VERSION) &&
             gpCloudClientDm->setDeviceObjectFirmwareVersion(DEVICE_OBJECT_FIRMWARE_VERSION) &&
             gpCloudClientDm->addDeviceObjectPowerSource(CloudClientDm::POWER_SOURCE_INTERNAL_BATTERY) &&

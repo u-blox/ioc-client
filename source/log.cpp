@@ -24,6 +24,16 @@ extern int errno;
 extern const char *gLogStrings[];
 extern const int gNumLogStrings;
 
+// Mutex to arbitrate logging.
+// The callback which writes logging to disk
+// will attempt to lock this mutex while the
+// function that prints out the log owns the
+// mutex. Note that the logging functions
+// themselves shouldn't wait on it (they have
+// no reason to as the buffering should
+// handle any overlap); they MUST return quickly.
+static Mutex logMutex;
+
 /* ----------------------------------------------------------------
  * VARIABLES
  * -------------------------------------------------------------- */
@@ -32,8 +42,6 @@ extern const int gNumLogStrings;
 static LogEntry *gpLog = NULL;
 static LogEntry *gpLogNextEmpty = NULL;
 static LogEntry const *gpLogFirstFull = NULL;
-static unsigned int gNumLogEntries;
-static unsigned int gLogEntryOverflowCount;
 
 // A logging timestamp.
 static Timer gLogTime;
@@ -75,7 +83,6 @@ bool initLog(void * pBuffer, const char * pFileName)
 
     gpLog = (LogEntry * ) pBuffer;
     gpFileName = NULL;
-    gNumLogEntries = 0;
     gpLogNextEmpty = gpLog;
     gpLogFirstFull = gpLog;
 
@@ -146,34 +153,19 @@ void LOG(LogEvent event, int parameter)
         gpLogNextEmpty->timestamp = gLogTime.read_us();
         gpLogNextEmpty->event = event;
         gpLogNextEmpty->parameter = parameter;
-        gpLogNextEmpty++;
-        if (gpLogNextEmpty >= gpLog + MAX_NUM_LOG_ENTRIES) {
+        if (gpLogNextEmpty < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
+            gpLogNextEmpty++;
+        } else {
             gpLogNextEmpty = gpLog;
         }
 
-        if (gpLogNextEmpty != gpLogFirstFull) {
-            gNumLogEntries++;
-            // Logging was previously wrapped, insert an entry to
-            // say so how many entries were lost
-            if (gLogEntryOverflowCount > 0) {
-                gpLogNextEmpty->timestamp = gLogTime.read_us();
-                gpLogNextEmpty->event = EVENT_LOG_ENTRIES_LOST;
-                gpLogNextEmpty->parameter = gLogEntryOverflowCount;
-                gLogEntryOverflowCount = 0;
-                gpLogNextEmpty++;
-                if (gpLogNextEmpty >= gpLog + MAX_NUM_LOG_ENTRIES) {
-                    gpLogNextEmpty = gpLog;
-                }
+        if (gpLogNextEmpty == gpLogFirstFull) {
+            // Logging has wrapped, so move the
+            // first pointer on to reflect the
+            // overwrite
+            if (gpLogFirstFull < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
                 gpLogFirstFull++;
-                if (gpLogFirstFull >= gpLog + MAX_NUM_LOG_ENTRIES) {
-                    gpLogFirstFull = gpLog;
-                }
-            }
-        } else {
-            // Logging has wrapped
-            gLogEntryOverflowCount++;
-            gpLogFirstFull++;
-            if (gpLogFirstFull >= gpLog + MAX_NUM_LOG_ENTRIES) {
+            } else {
                 gpLogFirstFull = gpLog;
             }
         }
@@ -184,32 +176,36 @@ void LOG(LogEvent event, int parameter)
 // to file, if a filename was provided to initLog().
 void writeLog()
 {
-    if (gpFile != NULL) {
-        while (gNumLogEntries > 0) {
-            fwrite(gpLogFirstFull, sizeof(LogEntry), 1, gpFile);
-            gpLogFirstFull++;
-            if (gpLogFirstFull >= gpLog + MAX_NUM_LOG_ENTRIES) {
-                gpLogFirstFull = gpLog;
+    if (logMutex.trylock()) {
+        if (gpFile != NULL) {
+            while (gpLogNextEmpty != gpLogFirstFull) {
+                fwrite(gpLogFirstFull, sizeof(LogEntry), 1, gpFile);
+                if (gpLogFirstFull < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
+                    gpLogFirstFull++;
+                } else {
+                    gpLogFirstFull = gpLog;
+                }
             }
-            gNumLogEntries--;
         }
+        logMutex.unlock();
     }
 }
 
 // Print out the log.
 void printLog()
 {
-    LogEntry *pItem = gpLogNextEmpty;
+    const LogEntry *pItem = gpLogNextEmpty;
     LogEntry fileItem;
     FILE *pFile = gpFile;
     unsigned int x = 0;
 
+    logMutex.lock();
     printf ("------------- Log starts -------------\n");
     if ((gpFile != NULL) && (gpFileName != NULL)) {
         // If we were logging to file, read it back
         // First need to flush the file to disk
         fclose(gpFile);
-        gpFile = NULL; // This stops writeLog() getting in the way
+        gpFile = NULL;
         LOG(EVENT_FILE_CLOSE, 0);
         pFile = fopen (gpFileName, "rb");
         if (pFile != NULL) {
@@ -229,17 +225,12 @@ void printLog()
         }
     }
 
-    // Rotate to the start of the log [remaining] in RAM
-    for (x = 0; x < MAX_NUM_LOG_ENTRIES - gNumLogEntries; x++) {
-        pItem++;
-        if (pItem >= gpLog + MAX_NUM_LOG_ENTRIES) {
-            pItem = gpLog;
-        }
-    }
-
-    // Print that as well
-    for (unsigned int x = 0; x < gNumLogEntries; x++) {
+    // Print the log items remaining in RAM
+    pItem = gpLogFirstFull;
+    x = 0;
+    while (pItem != gpLogNextEmpty) {
         printLogItem(pItem, x);
+        x++;
         pItem++;
         if (pItem >= gpLog + MAX_NUM_LOG_ENTRIES) {
             pItem = gpLog;
@@ -258,6 +249,7 @@ void printLog()
     }
 
     printf ("-------------- Log ends --------------\n");
+    logMutex.unlock();
 }
 
 // End of file
