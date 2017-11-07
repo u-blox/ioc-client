@@ -5,6 +5,7 @@
 // of prints flowing up the console window.
 const char *gLogStrings[] = {
     "  EMPTY",
+    "  BUILD_TIME_UNIX_FORMAT",
     "  USER_1",
     "  USER_2",
     "  USER_3",
@@ -12,6 +13,7 @@ const char *gLogStrings[] = {
     "  LOG_STOP",
     "  SYSTEM_START",
     "  SYSTEM_STOP",
+    "  TIME_UTC",
     "  ENTER_STANDBY",
     "  ENTER_STOP",
     "  SLEEP_LEVEL_OFF",

@@ -72,23 +72,22 @@ void LOG(LogEvent event, int parameter);
 /** Initialise logging.
  *
  * @param pBuffer    must point to LOG_STORE_SIZE bytes of storage.
- * @param pFileName  should point to the desired name of a log file if
- *                   writing to file is required, otherwise NULL.
+ * @param pPartition the partition in which to create the log files.
  *                   NOTE: must be a const as this function does
  *                   not take a copy of it.
  * @return           true if successful, otherwise false.
  */
-bool initLog(void * pBuffer, const char *pFileName);
+bool initLog(void * pBuffer, const char *pPartition);
 
-/** Initialise a log file.  May be used if no file system was available
+/** Start logging to file.  May be used if no file system was available
  * at the time of the call to initLog.
  *
- * @param pFileName  the name of the log file  to open.
+ * @param pPartition the partition in which to open the log files.
  *                   NOTE: must be a const as this function does
  *                   not take a copy of it.
  * @return           true if successful, otherwise false.
  */
-bool initLogFile(const char *pFileName);
+bool initLogFile(const char *pPartition);
 
 /** Close down logging.
  */

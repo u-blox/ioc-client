@@ -5,11 +5,18 @@
 extern "C" {
 #endif
 
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// IMPORTANT: increment this variable if you make ANY changes
+// to the enum below
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#define LOG_VERSION 0
+
 // The possible events for the RAM log
 // If you add an item here, don't forget to
 // add it to gLogEventStrings (in log_strings.cpp) also.
 typedef enum {
     EVENT_NONE,
+    EVENT_BUILD_TIME_UNIX_FORMAT,
     EVENT_USER_1,
     EVENT_USER_2,
     EVENT_USER_3,
@@ -17,6 +24,7 @@ typedef enum {
     EVENT_LOG_STOP,
     EVENT_SYSTEM_START,
     EVENT_SYSTEM_STOP,
+    EVENT_TIME_UTC,
     EVENT_ENTER_STANDBY,
     EVENT_ENTER_STOP,
     EVENT_SLEEP_LEVEL_OFF,

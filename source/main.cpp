@@ -27,6 +27,7 @@
 #include "battery_gauge_bq27441.h"
 #include "battery_charger_bq24295.h"
 #include "gnss.h"
+#include "compile_time.h"
 #ifdef MBED_HEAP_STATS_ENABLED
 #include "mbed_stats.h"
 #endif
@@ -165,11 +166,7 @@
 // The partition on the SD card used by us.
 #define IOC_PARTITION "ioc"
 
-// The name of the log file to use; set to NULL if logging
-// to file is not required.
-#define LOG_FILE "/" IOC_PARTITION "/ioc.log"
-
-// The log write interval, only needed if LOG_FILE is not NULL.
+// The log write interval.
 #define LOG_WRITE_INTERVAL_MS 1000
 
 /* ----------------------------------------------------------------
@@ -1243,6 +1240,10 @@ static bool gnssUpdate(IocM2mLocation::Location *location)
 
                             LOG(EVENT_GNSS_TIMESTAMP, gpsTime);
                             location->timestampUnix = gpsTime;
+                            // Update system time
+                            gStartTime += gpsTime - time(NULL);
+                            set_time(gpsTime);
+                            LOG(EVENT_TIME_UTC, time(NULL));
                         }
 
                         // The fix information is contained at byte offsets as follows:
@@ -1694,9 +1695,12 @@ static void cloudClientRegisteredCallback()
     LOG(EVENT_CLOUD_CLIENT_REGISTERED, 0);
     printf("Mbed Cloud Client is registered, press the user button to exit.\n");
 
-    // The registration process will update system time so
+    // The registration process may update system time so
     // read the start time now.
-    gStartTime = time(NULL);
+    if (time(NULL) > (signed int) __COMPILE_TIME_UNIX__) {
+        gStartTime = time(NULL);
+        LOG(EVENT_TIME_UTC, time(NULL));
+    }
 }
 
 // Callback when mbed Cloud Client deregisters from the LWM2M server.
@@ -1857,14 +1861,12 @@ static bool initFileSystem()
     }
     printf("SD card started.\n");
 
-    if (LOG_FILE != NULL) {
-        flash();
-        printf("Starting logging to file...\n");
-        if (initLogFile(LOG_FILE)) {
-            gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
-        } else {
-            printf("WARNING: unable to initialise logging to file.\n");
-        }
+    flash();
+    printf("Starting logging to file...\n");
+    if (initLogFile(IOC_PARTITION)) {
+        gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
+    } else {
+        printf("WARNING: unable to initialise logging to file.\n");
     }
 
     return true;
@@ -2524,6 +2526,7 @@ int main()
     }
 
     LOG(EVENT_SYSTEM_START, gResetReason);
+    LOG(EVENT_BUILD_TIME_UNIX_FORMAT, __COMPILE_TIME_UNIX__);
 
     // Bring up the battery charger and battery gauge
     initPower();

@@ -17,6 +17,16 @@
 #include "mbed.h"
 #include "log.h"
 
+/* ----------------------------------------------------------------
+ * COMPILE-TIME MACROS
+ * -------------------------------------------------------------- */
+
+#define NUM_WRITES_BEFORE_FLUSH 10
+
+/* ----------------------------------------------------------------
+ * VARIABLES
+ * -------------------------------------------------------------- */
+
 // To obtain file system errors.
 extern int errno;
 
@@ -34,9 +44,8 @@ extern const int gNumLogStrings;
 // handle any overlap); they MUST return quickly.
 static Mutex logMutex;
 
-/* ----------------------------------------------------------------
- * VARIABLES
- * -------------------------------------------------------------- */
+// The number of calls to writeLog().
+static int numWrites = 0;
 
 // A logging buffer.
 static LogEntry *gpLog = NULL;
@@ -49,11 +58,8 @@ static Timer gLogTime;
 // A file to write logs to.
 static FILE *gpFile = NULL;
 
-// The name of the log file (needed
-// so that we can open and close it in
-// order to flush it since fflush()
-// does nothing).
-static const char *gpFileName = NULL;
+// The name of the log file.
+static char gFileNameBuffer[64];
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -72,67 +78,75 @@ void printLogItem(const LogEntry *pItem, unsigned int itemIndex)
 
 }
 
+// Open a log file, storing its name in gFileNameBuffer
+// and returning a handle to it.
+FILE * newLogFile(const char * pPartition)
+{
+    FILE *pFile = NULL;
+
+    if (strlen(pPartition) < sizeof (gFileNameBuffer) - 11) {
+        // 11 above is for two file separators, "xxxx.log" and a null terminator
+        // (see sprintf below)
+        for (unsigned int x = 0; (x < 1000) && (pFile == NULL); x++) {
+            sprintf(gFileNameBuffer, "/%s/%04d.log", pPartition, x);
+            // Try to open the file to see if it exists
+            pFile = fopen(gFileNameBuffer, "r");
+            // If it doesn't exist, use it, otherwise close
+            // it and go around again
+            if (pFile == NULL) {
+                printf("Log file will be \"%s\".\n", gFileNameBuffer);
+                pFile = fopen (gFileNameBuffer, "wb+");
+                if (pFile != NULL) {
+                    LOG(EVENT_FILE_OPEN, 0);
+                } else {
+                    LOG(EVENT_FILE_OPEN_FAILURE, errno);
+                    perror ("Error initialising log file");
+                }
+            } else {
+                fclose(pFile);
+                pFile = NULL;
+            }
+        }
+    }
+
+    return pFile;
+}
+
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
 
 // Initialise logging.
-bool initLog(void * pBuffer, const char * pFileName)
+bool initLog(void * pBuffer, const char * pPartition)
 {
-    bool success = false;
-
-    gpLog = (LogEntry * ) pBuffer;
-    gpFileName = NULL;
-    gpLogNextEmpty = gpLog;
-    gpLogFirstFull = gpLog;
-
     gLogTime.reset();
     gLogTime.start();
+    gpLog = (LogEntry * ) pBuffer;
+    gpLogNextEmpty = gpLog;
+    gpLogFirstFull = gpLog;
+    LOG(EVENT_LOG_START, LOG_VERSION);
 
-    LOG(EVENT_LOG_START, 0);
-
-    if (pFileName != NULL) {
-        gpFile = fopen (pFileName, "wb+");
-        if (gpFile != NULL) {
-            gpFileName = pFileName;
-            LOG(EVENT_FILE_OPEN, 0);
-            success = true;
-        } else {
-            LOG(EVENT_FILE_OPEN_FAILURE, errno);
-            perror ("Error initialising log file");
-        }
-    } else {
-        success = true;
+    if (pPartition != NULL) {
+        gpFile = newLogFile(pPartition);
     }
 
-    return success;
+    return (pPartition == NULL) || (gpFile != NULL);
 }
 
 // Initialise the log file.
-bool initLogFile(const char * pFileName)
+bool initLogFile(const char * pPartition)
 {
-    bool success = false;
-
     if (gpFile == NULL) {
-        gpFileName = NULL;
-        gpFile = fopen (pFileName, "wb+");
-        if (gpFile) {
-            gpFileName = pFileName;
-            LOG(EVENT_FILE_OPEN, 0);
-            success = true;
-        } else {
-            LOG(EVENT_FILE_OPEN_FAILURE, errno);
-            perror ("Error initialising log file");
-        }
+        gpFile = newLogFile(pPartition);
     }
 
-    return success;
+    return (gpFile != NULL);
 }
 
 // Close down logging.
 void deinitLog()
 {
-    LOG(EVENT_LOG_STOP, 0);
+    LOG(EVENT_LOG_STOP, LOG_VERSION);
     if (gpFile != NULL) {
         LOG(EVENT_FILE_CLOSE, 0);
         fclose(gpFile);
@@ -172,6 +186,22 @@ void LOG(LogEvent event, int parameter)
     }
 }
 
+// Flush the log file.
+// Note: log file mutex must be locked before calling.
+void flushLog()
+{
+    if (gpFile != NULL) {
+        fclose(gpFile);
+        LOG(EVENT_FILE_CLOSE, 0);
+        gpFile = fopen (gFileNameBuffer, "wb+");
+        if (gpFile) {
+            LOG(EVENT_FILE_OPEN, 0);
+        } else {
+            LOG(EVENT_FILE_OPEN_FAILURE, errno);
+        }
+    }
+}
+
 // This should be called periodically to write the log
 // to file, if a filename was provided to initLog().
 void writeLog()
@@ -180,6 +210,11 @@ void writeLog()
         if (gpFile != NULL) {
             while (gpLogNextEmpty != gpLogFirstFull) {
                 fwrite(gpLogFirstFull, sizeof(LogEntry), 1, gpFile);
+                numWrites++;
+                if (numWrites > NUM_WRITES_BEFORE_FLUSH) {
+                    numWrites = 0;
+                    //flushLog();
+                }
                 if (gpLogFirstFull < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
                     gpLogFirstFull++;
                 } else {
@@ -196,18 +231,20 @@ void printLog()
 {
     const LogEntry *pItem = gpLogNextEmpty;
     LogEntry fileItem;
+    bool loggingToFile = false;
     FILE *pFile = gpFile;
     unsigned int x = 0;
 
     logMutex.lock();
     printf ("------------- Log starts -------------\n");
-    if ((gpFile != NULL) && (gpFileName != NULL)) {
+    if (gpFile != NULL) {
         // If we were logging to file, read it back
         // First need to flush the file to disk
+        loggingToFile = true;
         fclose(gpFile);
         gpFile = NULL;
         LOG(EVENT_FILE_CLOSE, 0);
-        pFile = fopen (gpFileName, "rb");
+        pFile = fopen (gFileNameBuffer, "rb");
         if (pFile != NULL) {
             LOG(EVENT_FILE_OPEN, 0);
             while (fread(&fileItem, sizeof(fileItem), 1, pFile) == 1) {
@@ -237,9 +274,9 @@ void printLog()
         }
     }
 
-    // Allow writeLog() to resume
-    if (gpFileName != NULL) {
-        gpFile = fopen (gpFileName, "wb+");
+    // Allow writeLog() to resume with the same file name
+    if (loggingToFile) {
+        gpFile = fopen (gFileNameBuffer, "wb+");
         if (gpFile) {
             LOG(EVENT_FILE_OPEN, 0);
         } else {
