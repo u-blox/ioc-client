@@ -118,6 +118,11 @@
 #define TEMPERATURE_MAX_MEASURABLE_RANGE 120.0
 #define TEMPERATURE_UNITS "cel"
 
+// The default logging setup data.
+#define LOGGING_DEFAULT_TO_FILE_ENABLED true
+#define LOGGING_DEFAULT_UPLOAD_ENABLED  true
+#define LOGGING_DEFAULT_SERVER_URL      "ciot.it-sgn.u-blox.com:5060"
+
 // The period at which GNSS location is read (if it is active).
 #define GNSS_UPDATE_PERIOD_MS (CONFIG_DEFAULT_READY_WAKE_UP_TICK_COUNTER_PERIOD_1 / 2)
 
@@ -158,6 +163,10 @@
 
 // The interval at which we check for exit.
 #define BUTTON_CHECK_INTERVAL_MS 1000
+
+// The interval at which we check for LWM2M server
+// registration during startup.
+#define CLOUD_CLIENT_REGISTRATION_CHECK_INTERVAL_MS 1000
 
 // The minimum Voltage limit that must be set in the battery
 // charger chip to make USB operation reliable.
@@ -266,6 +275,13 @@ typedef struct {
     unsigned int numAudioBytesSent;
 } DiagnosticsLocal;
 
+// The local version of logging data.
+typedef struct {
+    bool loggingToFileEnabled;
+    bool loggingUploadEnabled;
+    String loggingServerUrl;
+} LoggingLocal;
+
 // Implementation of MbedCloudClientCallback,
 // a catch-all should the callback get missed out on
 // an object that includes a writable resources.
@@ -359,8 +375,8 @@ static bool init();
 static void deinit();
 
 // Operating modes and sleep
-static void setSleepLevelRegistered(time_t sleepDurationSeconds);
-static void setSleepLevelDeregistered(time_t sleepDurationSeconds);
+static void setSleepLevelRegisteredSleep(time_t sleepDurationSeconds);
+static void setSleepLevelDeregisteredSleep(time_t sleepDurationSeconds);
 static void setSleepLevelOff();
 static void initialisationModeWakeUpTickHandler();
 static void initialisationMode();
@@ -504,6 +520,9 @@ static DigitalOut gLedBlue(LED3, 1);
 static DiagnosticsLocal gDiagnostics = {0};
 static Ticker gSecondTicker;
 static int gStartTime = 0;
+
+// For logging.
+static LoggingLocal gLoggingLocal = {0};
 __attribute__ ((section ("CCMRAM")))
 static char gLogBuffer[LOG_STORE_SIZE];
 
@@ -678,6 +697,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
     } else {
         getAddressFromUrl(pAudio->audioServerUrl.c_str(), pBuf, AUDIO_MAX_LEN_SERVER_URL);
         printf("Looking for server URL \"%s\"...\n", pBuf);
+        LOG(EVENT_DNS_LOOKUP, 0);
         if (gpCellular->gethostbyname(pBuf, &pAudio->server) == 0) {
             printf("Found it at IP address %s.\n", pAudio->server.get_ip_address());
             if (getPortFromUrl(pAudio->audioServerUrl.c_str(), &port)) {
@@ -689,6 +709,7 @@ static bool startAudioStreamingConnection(AudioLocal *pAudio)
             }
         } else {
             bad();
+            LOG(EVENT_DNS_LOOKUP_FAILURE, 0);
             LOG(EVENT_AUDIO_STREAMING_CONNECTION_START_FAILURE, 1);
             printf("Error, couldn't resolve IP address of audio streaming server.\n");
             return false;
@@ -1243,7 +1264,7 @@ static bool gnssUpdate(IocM2mLocation::Location *location)
                             // Update system time
                             gStartTime += gpsTime - time(NULL);
                             set_time(gpsTime);
-                            LOG(EVENT_TIME_UTC, time(NULL));
+                            LOG(EVENT_CURRENT_TIME_UTC, time(NULL));
                         }
 
                         // The fix information is contained at byte offsets as follows:
@@ -1699,7 +1720,7 @@ static void cloudClientRegisteredCallback()
     // read the start time now.
     if (time(NULL) > (signed int) __COMPILE_TIME_UNIX__) {
         gStartTime = time(NULL);
-        LOG(EVENT_TIME_UTC, time(NULL));
+        LOG(EVENT_CURRENT_TIME_UTC, time(NULL));
     }
 }
 
@@ -1846,6 +1867,11 @@ static bool initFileSystem()
 {
     int x;
 
+    // Set up logging defaults here
+    gLoggingLocal.loggingToFileEnabled = LOGGING_DEFAULT_TO_FILE_ENABLED;
+    gLoggingLocal.loggingUploadEnabled = LOGGING_DEFAULT_UPLOAD_ENABLED;
+    gLoggingLocal.loggingServerUrl = LOGGING_DEFAULT_SERVER_URL;
+
     flash();
     LOG(EVENT_SD_CARD_START, 0);
     printf("Starting SD card...\n");
@@ -1861,12 +1887,14 @@ static bool initFileSystem()
     }
     printf("SD card started.\n");
 
-    flash();
-    printf("Starting logging to file...\n");
-    if (initLogFile(IOC_PARTITION)) {
-        gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
-    } else {
-        printf("WARNING: unable to initialise logging to file.\n");
+    if (gLoggingLocal.loggingToFileEnabled) {
+        flash();
+        printf("Starting logging to file...\n");
+        if (initLogFile(IOC_PARTITION)) {
+            gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
+        } else {
+            printf("WARNING: unable to initialise logging to file.\n");
+        }
     }
 
     return true;
@@ -2327,13 +2355,15 @@ static void deinit()
  *   has been completed, go to sleepLevel until the next
  *   tick,
  * - if wakeUpTickCounterModulo is reached:
- *   - if there is external power, set wakeUpTick to 10
- *     minutes [readyWakeUpTickCounterPeriod2],
- *   - if there is no external power, go to sleepLevel OFF.
+ *   - if audio streaming is in progress, keep wakeUpTick
+ *     at 1 minute, otherwise:
+ *     - if there is external power, set wakeUpTick to 10
+ *       minutes [readyWakeUpTickCounterPeriod2],
+ *     - if there is no external power, go to sleepLevel OFF.
  */
 
 // Go to MCU sleep but remain registered, for the given time.
-static void setSleepLevelRegistered(time_t sleepDurationSeconds)
+static void setSleepLevelRegisteredSleep(time_t sleepDurationSeconds)
 {
     time_t sleepTimeLeft;
     gTimeEnterSleep = time(NULL);
@@ -2358,7 +2388,7 @@ static void setSleepLevelRegistered(time_t sleepDurationSeconds)
 }
 
 // Go to deregistered sleep for the given time.
-static void setSleepLevelDeregistered(time_t sleepDurationSeconds)
+static void setSleepLevelDeregisteredSleep(time_t sleepDurationSeconds)
 {
     gTimeEnterSleep = time(NULL);
     gTimeLeaveSleep = gTimeEnterSleep + sleepDurationSeconds;
@@ -2433,8 +2463,22 @@ static void initialisationMode()
         timeStarted = time(NULL);
         success = initFileSystem() && init();
         if (!success) {
-            setSleepLevelDeregistered(gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
+            setSleepLevelDeregisteredSleep(gConfigLocal.initWakeUpTickCounterPeriod - (time(NULL) - timeStarted));
         }
+    }
+
+    // The cloud client registration event is asynchronous
+    // to the above, so need to wait for it now
+    while (!gpCloudClientDm->isConnected()) {
+        HAL_IWDG_Refresh(&gWdt);
+        wait_ms(CLOUD_CLIENT_REGISTRATION_CHECK_INTERVAL_MS);
+    }
+
+    // Having done all of that, it's now safe to begin
+    // uploading any log files that might be lying around
+    // from previous runs to a logging server
+    if (gLoggingLocal.loggingUploadEnabled) {
+        beginLogFileUpload(&gFs, gpCellular, gLoggingLocal.loggingServerUrl.c_str(), "/");
     }
 
     // Remove the Initialisation mode wake-up handler
@@ -2462,14 +2506,20 @@ static void readyModeWakeUpTickHandler()
     LOG(EVENT_READY_MODE_WAKE_UP_TICK, gWakeUpTickCounter);
     if (gWakeUpTickCounter >= gConfigLocal.readyWakeUpTickCounterModulo) {
         gWakeUpTickCounter = 0;
-        if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
-            // If there is no external power we've been awake for long enough
-            setSleepLevelOff();
-        } else {
-            // Otherwise, just switch to the long repeat period as obviously
-            // nothing much is happening
+        if (gAudioLocalActive.streamingEnabled) {
+            // If we're streaming, make sure we stay awake
             gEventQueue.cancel(gWakeUpTickHandler);
-            gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod2 * 1000, readyModeWakeUpTickHandler);
+            gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod1 * 1000, readyModeWakeUpTickHandler);
+        } else {
+            if (gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
+                // If there is no external power we've been awake for long enough
+                setSleepLevelOff();
+            } else {
+                // Otherwise, just switch to the long repeat period as obviously
+                // nothing much is happening
+                gEventQueue.cancel(gWakeUpTickHandler);
+                gWakeUpTickHandler = gEventQueue.call_every(gConfigLocal.readyWakeUpTickCounterPeriod2 * 1000, readyModeWakeUpTickHandler);
+            }
         }
     }
 

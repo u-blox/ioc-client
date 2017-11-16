@@ -21,7 +21,9 @@
  * the event) and a microsecond time-stamp.
  */
 
+#include "mbed.h"
 #include "stdbool.h"
+#include "FATFileSystem.h"
 #include "log_enum.h"
 
 #ifndef _LOG_
@@ -77,7 +79,7 @@ void LOG(LogEvent event, int parameter);
  *                   not take a copy of it.
  * @return           true if successful, otherwise false.
  */
-bool initLog(void * pBuffer, const char *pPartition);
+bool initLog(void *pBuffer, const char *pPartition);
 
 /** Start logging to file.  May be used if no file system was available
  * at the time of the call to initLog.
@@ -88,6 +90,27 @@ bool initLog(void * pBuffer, const char *pPartition);
  * @return           true if successful, otherwise false.
  */
 bool initLogFile(const char *pPartition);
+
+/** Begin upload of log files to a logging server.
+ *
+ * @param pFileSysem        a pointer to the file system where
+ *                          the logs are stored (in pPartition).
+ * @param pNetworkInterface a pointer to the network interface
+ *                          to use for upload.
+ * @param pLoggingServerUrl the logging server to connect to
+ *                          (including port number).
+ * @param pPath             the path to the log file directory.
+ * @return                  true if log uploading begins successfully,
+ *                          otherwise false.
+ */
+bool beginLogFileUpload(FATFileSystem *pFileSystem,
+                        NetworkInterface *pNetworkInterface,
+                        const char *pLoggingServerUrl,
+                        const char * pPath);
+
+/** Stop uploading log files to the logging server and free resources.
+ */
+void stopLogFileUpload();
 
 /** Close down logging.
  */
