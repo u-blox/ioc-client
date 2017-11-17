@@ -22,18 +22,32 @@
  * -------------------------------------------------------------- */
 
 // How long to wait between flushes to file.
-#define LOGGING_NUM_WRITES_BEFORE_FLUSH 10
+#define LOGGING_NUM_WRITES_BEFORE_FLUSH 5
 
-// The maximum length of a file name with path.
-#define LOGGING_MAX_LEN_FILE_PATH 64
+// The maximum length of a path (including trailing slash).
+#define LOGGING_MAX_LEN_PATH 56
+
+// The maximum length of a file name (including extension).
+#define LOGGING_MAX_LEN_FILE_NAME 8
+
+#define LOGGING_MAX_LEN_FILE_PATH (LOGGING_MAX_LEN_PATH + LOGGING_MAX_LEN_FILE_NAME)
 
 // The maximum length of the URL of the logging server (including port).
 #define LOGGING_MAX_LEN_SERVER_URL 128
 
 // The TCP buffer size for log file uploads.
-// NOTE: this is on the thread's stack (gotta use those 500 bytes for
-// something) so don't make it too big.
 #define LOGGING_TCP_BUFFER_SIZE 265
+
+/* ----------------------------------------------------------------
+ * TYPES
+ * -------------------------------------------------------------- */
+
+// Type used to pass parameters to the log file upload callback.
+typedef struct {
+    FATFileSystem *pFileSystem;
+    const char *pCurrentLogFile;
+    NetworkInterface *pNetworkInterface;
+} LogFileUploadData;
 
 /* ----------------------------------------------------------------
  * VARIABLES
@@ -54,10 +68,10 @@ extern const int gNumLogStrings;
 // themselves shouldn't wait on it (they have
 // no reason to as the buffering should
 // handle any overlap); they MUST return quickly.
-static Mutex logMutex;
+static Mutex gLogMutex;
 
 // The number of calls to writeLog().
-static int numWrites = 0;
+static int gNumWrites = 0;
 
 // A logging buffer.
 static LogEntry *gpLog = NULL;
@@ -70,23 +84,21 @@ static Timer gLogTime;
 // A file to write logs to.
 static FILE *gpFile = NULL;
 
-// A pointer to the name of the partition.
-static const char *gpPartition = NULL;
-
-// A pointer to the directory where log files are stored.
-static Dir *gpDir = NULL;
+// The path where log files are kept.
+static char gLogPath[LOGGING_MAX_LEN_PATH + 1];
 
 // The name of the current log file.
-static char gCurrentLogFileNameBuffer[LOGGING_MAX_LEN_FILE_PATH];
+static char gCurrentLogFileName[LOGGING_MAX_LEN_FILE_PATH + 1];
 
 // The address of the logging server.
 static SocketAddress *gpLoggingServer = NULL;
 
-// A TCP socket to the above server.
-static TCPSocket *gpTcpSock = NULL;
-
 // A thread to run the log upload process.
 static Thread *gpLogUploadThread = NULL;
+
+// A buffer to hold some data that is required by the
+// log file upload thread.
+static LogFileUploadData *gpLogFileUploadData = NULL;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -99,42 +111,36 @@ void printLogItem(const LogEntry *pItem, unsigned int itemIndex)
         printf("%.3f: out of range event at entry %d (%d when max is %d)\n",
                (float) pItem->timestamp / 1000, itemIndex, pItem->event, gNumLogStrings);
     } else {
-        printf ("%6.3f: %s %d (%#x)\n", (float) pItem->timestamp / 1000,
-                gLogStrings[pItem->event], pItem->parameter, pItem->parameter);
+        printf ("%6.3f: %s [%d] %d (%#x)\n", (float) pItem->timestamp / 1000,
+                gLogStrings[pItem->event], pItem->event, pItem->parameter, pItem->parameter);
     }
 
 }
 
-// Open a log file, storing its name in gCurrentLogFileNameBuffer
+// Open a log file, storing its name in gCurrentLogFileName
 // and returning a handle to it.
-FILE * newLogFile(const char * pPartition)
+FILE *newLogFile()
 {
     FILE *pFile = NULL;
 
-    if (strlen(pPartition) < sizeof (gCurrentLogFileNameBuffer) - 11) {
-        // 11 above is for two file separators, "xxxx.log" and a null terminator
-        // (see sprintf below)
-        // BE CAREFUL if you change the filename format as the
-        // beginLogFileUpload() function expects this exact format
-        for (unsigned int x = 0; (x < 1000) && (pFile == NULL); x++) {
-            sprintf(gCurrentLogFileNameBuffer, "/%s/%04d.log", pPartition, x);
-            // Try to open the file to see if it exists
-            pFile = fopen(gCurrentLogFileNameBuffer, "r");
-            // If it doesn't exist, use it, otherwise close
-            // it and go around again
-            if (pFile == NULL) {
-                printf("Log file will be \"%s\".\n", gCurrentLogFileNameBuffer);
-                pFile = fopen (gCurrentLogFileNameBuffer, "wb+");
-                if (pFile != NULL) {
-                    LOG(EVENT_FILE_OPEN, 0);
-                } else {
-                    LOG(EVENT_FILE_OPEN_FAILURE, errno);
-                    perror ("Error initialising log file");
-                }
+    for (unsigned int x = 0; (x < 1000) && (pFile == NULL); x++) {
+        sprintf(gCurrentLogFileName, "%s/%04d.log", gLogPath, x);
+        // Try to open the file to see if it exists
+        pFile = fopen(gCurrentLogFileName, "r");
+        // If it doesn't exist, use it, otherwise close
+        // it and go around again
+        if (pFile == NULL) {
+            printf("Log file will be \"%s\".\n", gCurrentLogFileName);
+            pFile = fopen (gCurrentLogFileName, "wb+");
+            if (pFile != NULL) {
+                LOG(EVENT_FILE_OPEN, 0);
             } else {
-                fclose(pFile);
-                pFile = NULL;
+                LOG(EVENT_FILE_OPEN_FAILURE, errno);
+                perror ("Error initialising log file");
             }
+        } else {
+            fclose(pFile);
+            pFile = NULL;
         }
     }
 
@@ -184,87 +190,105 @@ static bool getPortFromUrl(const char * pUrl, int *port)
 }
 
 // Function to sit in a thread and upload log files.
-void logFileUploadCallback(const char *pCurrentLogFile)
+void logFileUploadCallback()
 {
     nsapi_error_t nsapiError;
+    Dir *pDir = new Dir();
     int x;
     int y = 0;
     int z;
-    int numFiles;
     struct dirent dirEnt;
     FILE *pFile = NULL;
+    TCPSocket *pTcpSock = new TCPSocket();
     int sendCount;
     int sendTotalThisFile;
     int size;
-    char readBuffer[LOGGING_TCP_BUFFER_SIZE];
+    char *pReadBuffer = new char[LOGGING_TCP_BUFFER_SIZE];
     char fileNameBuffer[LOGGING_MAX_LEN_FILE_PATH];
 
-    // Socket is open, send those log files, using a different
-    // TCP connection for each one so that the logging server
-    // stores them in separate files
-    numFiles = gpDir->size();
-    gpDir->rewind();
-    for (x = 0; x < numFiles; x++) {
-        if (gpDir->read(&dirEnt) == 1) {
-            // Read the entries in the directory
-            if ((dirEnt.d_type == DT_REG) &&
-                ((pCurrentLogFile == NULL) || (strcmp(dirEnt.d_name, pCurrentLogFile) != 0))) {
+    MBED_ASSERT (gpLogFileUploadData != NULL);
+
+    LOG(EVENT_DIR_OPEN, 0);
+    x = pDir->open(gpLogFileUploadData->pFileSystem, "/");
+    if (x == 0) {
+        // Send those log files, using a different TCP
+        // connection for each one so that the logging server
+        // stores them in separate files
+        do {
+            x = pDir->read(&dirEnt);
+            // Open the file, provided it's not the one we're currently logging to
+            if ((x == 1) && (dirEnt.d_type == DT_REG) &&
+                ((gpLogFileUploadData->pCurrentLogFile == NULL) ||
+                 (strcmp(dirEnt.d_name, gpLogFileUploadData->pCurrentLogFile) != 0))) {
                 y++;
-                LOG(EVENT_TCP_CONNECTING, 0);
-                nsapiError = gpTcpSock->connect(*gpLoggingServer);
+                LOG(EVENT_SOCKET_OPENING, y);
+                nsapiError = pTcpSock->open(gpLogFileUploadData->pNetworkInterface);
                 if (nsapiError == NSAPI_ERROR_OK) {
-                    LOG(EVENT_TCP_CONNECTED, 0);
-                    LOG(EVENT_LOG_UPLOAD_STARTING, y);
-                    // Open the file, provided it's not the one we're currently logging to
-                    sprintf(fileNameBuffer, "/%s/%s", gpPartition, dirEnt.d_name);
-                    pFile = fopen(fileNameBuffer, "r");
-                    if (pFile != NULL) {
-                        LOG(EVENT_FILE_OPEN, 0);
-                        sendTotalThisFile = 0;
-                        do {
-                            // Read the file and send it
-                            size = fread(readBuffer, 1, sizeof (readBuffer), pFile);
-                            sendCount = 0;
-                            while (sendCount < size) {
-                                z = gpTcpSock->send(readBuffer + sendCount, size - sendCount);
-                                if (z > 0) {
-                                    sendCount += z;
-                                    sendTotalThisFile += z;
+                    LOG(EVENT_SOCKET_OPENED, y);
+                    pTcpSock->set_timeout(10000);
+                    LOG(EVENT_TCP_CONNECTING, y);
+                    nsapiError = pTcpSock->connect(*gpLoggingServer);
+                    if (nsapiError == NSAPI_ERROR_OK) {
+                        LOG(EVENT_TCP_CONNECTED, y);
+                        LOG(EVENT_LOG_UPLOAD_STARTING, y);
+                        sprintf(fileNameBuffer, "%s/%s", gLogPath, dirEnt.d_name);
+                        pFile = fopen(fileNameBuffer, "r");
+                        if (pFile != NULL) {
+                            LOG(EVENT_FILE_OPEN, 0);
+                            sendTotalThisFile = 0;
+                            do {
+                                // Read the file and send it
+                                size = fread(pReadBuffer, 1, LOGGING_TCP_BUFFER_SIZE, pFile);
+                                sendCount = 0;
+                                while (sendCount < size) {
+                                    z = pTcpSock->send(pReadBuffer + sendCount, size - sendCount);
+                                    if (z > 0) {
+                                        sendCount += z;
+                                        sendTotalThisFile += z;
+                                    }
                                 }
-                            }
-                            LOG(EVENT_LOG_FILE_BYTE_COUNT, sendTotalThisFile);
-                        } while (size > 0);
-                        LOG(EVENT_LOG_FILE_UPLOAD_COMPLETED, y);
+                                LOG(EVENT_LOG_FILE_BYTE_COUNT, sendTotalThisFile);
+                            } while (size > 0);
+                            LOG(EVENT_LOG_FILE_UPLOAD_COMPLETED, y);
 
-                        // The file has now been sent, so close the socket
-                        LOG(EVENT_FILE_CLOSE, 0);
-                        gpTcpSock->close();
+                            // The file has now been sent, so close the socket
+                            LOG(EVENT_FILE_CLOSE, 0);
+                            pTcpSock->close();
 
-                        // Delete the file, so that we don't try to send it again
-                        if (remove(fileNameBuffer) == 0) {
-                            LOG(EVENT_FILE_DELETED, 0);
+                            // Delete the file, so that we don't try to send it again
+                            //if (remove(fileNameBuffer) == 0) {
+                            //    LOG(EVENT_FILE_DELETED, 0);
+                            //} else {
+                            //    LOG(EVENT_FILE_DELETE_FAILURE, 0);
+                            //}
                         } else {
-                            LOG(EVENT_FILE_DELETE_FAILURE, 0);
+                            LOG(EVENT_FILE_OPEN_FAILURE, 0);
                         }
                     } else {
-                        LOG(EVENT_FILE_OPEN_FAILURE, 0);
+                        LOG(EVENT_TCP_CONNECT_FAILURE, nsapiError);
                     }
                 } else {
-                    LOG(EVENT_TCP_CONNECT_FAILURE, nsapiError);
+                    LOG(EVENT_SOCKET_OPENING_FAILURE, nsapiError);
                 }
             }
-        }
+        } while (x > 0);
+    } else {
+        LOG(EVENT_DIR_OPEN_FAILURE, x);
     }
 
-    LOG(EVENT_LOG_ALL_UPLOADS_COMPLETED, 0);
+    LOG(EVENT_LOG_UPLOAD_TASK_COMPLETED, 0);
+    printf("[Log file upload background task has completed]\n");
 
-    // Clear up
-    delete gpTcpSock;
-    gpTcpSock = NULL;
+    // Clear up locals
+    delete pDir;
+    delete pTcpSock;
+    delete pReadBuffer;
+
+    // Clear up globals
+    delete gpLogFileUploadData;
+    gpLogFileUploadData = NULL;
     delete gpLoggingServer;
     gpLoggingServer = NULL;
-    delete gpDir;
-    gpDir = NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -272,7 +296,7 @@ void logFileUploadCallback(const char *pCurrentLogFile)
  * -------------------------------------------------------------- */
 
 // Initialise logging.
-bool initLog(void *pBuffer, const char *pPartition)
+void initLog(void *pBuffer)
 {
     gLogTime.reset();
     gLogTime.start();
@@ -280,21 +304,32 @@ bool initLog(void *pBuffer, const char *pPartition)
     gpLogNextEmpty = gpLog;
     gpLogFirstFull = gpLog;
     LOG(EVENT_LOG_START, LOG_VERSION);
-
-    if (pPartition != NULL) {
-        gpPartition = pPartition;
-        gpFile = newLogFile(pPartition);
-    }
-
-    return (pPartition == NULL) || (gpFile != NULL);
 }
 
 // Initialise the log file.
-bool initLogFile(const char *pPartition)
+bool initLogFile(const char *pPath)
 {
-    if (gpFile == NULL) {
-        gpPartition = pPartition;
-        gpFile = newLogFile(pPartition);
+    bool goodPath = true;
+    int x;
+
+    // Save the path
+    if (pPath == NULL) {
+        gLogPath[0] = 0;
+    } else {
+        if (strlen(pPath) < sizeof (gCurrentLogFileName) - LOGGING_MAX_LEN_FILE_NAME) {
+            strcpy(gLogPath, pPath);
+            x = strlen(gLogPath);
+            // Remove any trailing slash
+            if (gLogPath[x - 1] == '/') {
+                gLogPath[x - 1] = 0;
+            }
+        } else {
+            goodPath = false;
+        }
+    }
+
+    if (goodPath) {
+        gpFile = newLogFile();
     }
 
     return (gpFile != NULL);
@@ -303,13 +338,12 @@ bool initLogFile(const char *pPartition)
 // Upload previous log files.
 bool beginLogFileUpload(FATFileSystem *pFileSystem,
                         NetworkInterface *pNetworkInterface,
-                        const char *pLoggingServerUrl,
-                        const char *pPath)
+                        const char *pLoggingServerUrl)
 {
     bool success = false;
     char *pBuf = new char[LOGGING_MAX_LEN_SERVER_URL];
+    Dir *pDir = new Dir();
     int port;
-    nsapi_error_t nsapiError;
     int x;
     int y;
     int z = 0;
@@ -318,87 +352,80 @@ bool beginLogFileUpload(FATFileSystem *pFileSystem,
 
     if (gpLogUploadThread == NULL) {
         // First, determine if there are any log files to be uploaded.
-        if (gpPartition != NULL) {
-            gpDir = new Dir();
-            if (gpDir != NULL) {
-                x = gpDir->open(pFileSystem, pPath);
-                if (x == 0) {
-                    printf("Checking for log files to upload...\n");
-                    // Point to the name portion of the current log file
-                    // (format "/*/xxxx.log")
-                    pCurrentLogFile = strstr(gCurrentLogFileNameBuffer, ".log");
-                    if (pCurrentLogFile != NULL) {
-                        pCurrentLogFile -= 4; // Point to the start of the file name
-                    }
-                    do {
-                        y = gpDir->read(&dirEnt);
-                        if ((y == 1) && (dirEnt.d_type == DT_REG) &&
-                            ((pCurrentLogFile == NULL) || (strcmp(dirEnt.d_name, pCurrentLogFile) != 0))) {
-                            z++;
-                        }
-                    } while (y > 0);
+        LOG(EVENT_DIR_OPEN, 0);
+        // Note sure I understand why but you can't use the
+        // partition path, which is *required* when opening a
+        // file, when you are opening the root directory of
+        // the partition
+        x = pDir->open(pFileSystem, "/");
+        if (x == 0) {
+            printf("[Checking for log files to upload...]\n");
+            // Point to the name portion of the current log file
+            // (format "*/xxxx.log")
+            pCurrentLogFile = strstr(gCurrentLogFileName, ".log");
+            if (pCurrentLogFile != NULL) {
+                pCurrentLogFile -= 4; // Point to the start of the file name
+            }
+            do {
+                y = pDir->read(&dirEnt);
+                if ((y == 1) && (dirEnt.d_type == DT_REG) &&
+                    ((pCurrentLogFile == NULL) || (strcmp(dirEnt.d_name, pCurrentLogFile) != 0))) {
+                    z++;
+                }
+            } while (y > 0);
 
-                    LOG(EVENT_LOG_FILES_TO_UPLOAD, z);
-                    printf("%d log files to upload.\n", z);
+            LOG(EVENT_LOG_FILES_TO_UPLOAD, z);
+            printf("[%d log file(s) to upload]\n", z);
 
-                    if (z > 0) {
-                        gpLoggingServer = new SocketAddress();
-                        getAddressFromUrl(pLoggingServerUrl, pBuf, LOGGING_MAX_LEN_SERVER_URL);
-                        LOG(EVENT_DNS_LOOKUP, 0);
-                        printf("Looking for logging server URL \"%s\"...\n", pBuf);
-                        if (pNetworkInterface->gethostbyname(pBuf, gpLoggingServer) == 0) {
-                            printf("Found it at IP address %s.\n", gpLoggingServer->get_ip_address());
-                            if (getPortFromUrl(pLoggingServerUrl, &port)) {
-                                gpLoggingServer->set_port(port);
-                                printf("Logging server port set to %d.\n", gpLoggingServer->get_port());
-                            } else {
-                                printf("WARNING: no port number was specified in the logging server URL (\"%s\").\n",
-                                        pLoggingServerUrl);
-                            }
-                        } else {
-                            LOG(EVENT_DNS_LOOKUP_FAILURE, 0);
-                            printf("Unable to locate logging server \"%s\".\n", pLoggingServerUrl);
-                        }
-
-                        printf("Opening socket to logging server...\n");
-                        LOG(EVENT_SOCKET_OPENING, 0);
-                        gpTcpSock = new TCPSocket();
-                        nsapiError = gpTcpSock->open(pNetworkInterface);
-                        if (nsapiError == NSAPI_ERROR_OK) {
-                            LOG(EVENT_SOCKET_OPENED, 0);
-                            gpTcpSock->set_timeout(1000);
-                            // Socket is open, start a thread to upload the log files
-                            // in the background
-                            gpLogUploadThread = new Thread();
-                            if (gpLogUploadThread != NULL) {
-                                if (gpLogUploadThread->start(callback(logFileUploadCallback, pCurrentLogFile)) == osOK) {
-                                    printf("Log File upload background thread running.\n");
-                                    success = true;
-                                } else {
-                                    printf("Unable to start thread to upload files to logging server.\n");
-                                }
-                            } else {
-                                printf("Unable to instantiate thread to upload files to logging server (error %d).\n", nsapiError);
-                            }
-                        } else {
-                            LOG(EVENT_SOCKET_OPENING_FAILURE, nsapiError);
-                            printf("Unable to open socket to logging server (error %d).\n", nsapiError);
-                        }
+            if (z > 0) {
+                gpLoggingServer = new SocketAddress();
+                getAddressFromUrl(pLoggingServerUrl, pBuf, LOGGING_MAX_LEN_SERVER_URL);
+                LOG(EVENT_DNS_LOOKUP, 0);
+                printf("[Looking for logging server URL \"%s\"...]\n", pBuf);
+                if (pNetworkInterface->gethostbyname(pBuf, gpLoggingServer) == 0) {
+                    printf("[Found it at IP address %s]\n", gpLoggingServer->get_ip_address());
+                    if (getPortFromUrl(pLoggingServerUrl, &port)) {
+                        gpLoggingServer->set_port(port);
+                        printf("[Logging server port set to %d]\n", gpLoggingServer->get_port());
                     } else {
-                        success = true; // Nothing to do
+                        printf("[WARNING: no port number was specified in the logging server URL (\"%s\")]\n",
+                                pLoggingServerUrl);
                     }
                 } else {
-                    printf("Unable to open partition \"%s\" (error %d).\n", gpPartition, x);
+                    LOG(EVENT_DNS_LOOKUP_FAILURE, 0);
+                    printf("[Unable to locate logging server \"%s\"]\n", pLoggingServerUrl);
+                }
+
+                gpLogUploadThread = new Thread();
+                if (gpLogUploadThread != NULL) {
+                    // Note: this will be destroyed by the log file upload thread when it finishes
+                    gpLogFileUploadData = new LogFileUploadData();
+                    gpLogFileUploadData->pCurrentLogFile = pCurrentLogFile;
+                    gpLogFileUploadData->pFileSystem = pFileSystem;
+                    gpLogFileUploadData->pNetworkInterface = pNetworkInterface;
+                    if (gpLogUploadThread->start(callback(logFileUploadCallback)) == osOK) {
+                        printf("[Log file upload background task is now running]\n");
+                        success = true;
+                    } else {
+                        delete gpLogFileUploadData;
+                        gpLogFileUploadData = NULL;
+                        printf("[Unable to start thread to upload files to logging server]\n");
+                    }
+                } else {
+                    printf("[Unable to instantiate thread to upload files to logging server]\n");
                 }
             } else {
-                printf("Unable to instantiate directory object for partition \"%s\".\n", gpPartition);
+                success = true; // Nothing to do
             }
         } else {
-            printf("Tried to open file system for log uploads but gpPartition is not yet set.\n");
+            LOG(EVENT_DIR_OPEN_FAILURE, x);
+            printf("[Unable to open path \"%s\" (error %d)]\n", gLogPath, x);
         }
+        delete pDir;
     } else {
-        printf("Log upload thread already running.\n");
+        printf("[Log file upload task already running]\n");
     }
+    delete pBuf;
 
     return success;
 }
@@ -413,19 +440,14 @@ void stopLogFileUpload()
         gpLogUploadThread = NULL;
     }
 
-    if (gpTcpSock != NULL) {
-        delete gpTcpSock;
-        gpTcpSock = NULL;
+    if (gpLogFileUploadData != NULL) {
+        delete gpLogFileUploadData;
+        gpLogFileUploadData = NULL;
     }
 
     if (gpLoggingServer != NULL) {
         delete gpLoggingServer;
         gpLoggingServer = NULL;
-    }
-
-    if (gpDir != NULL) {
-        delete gpDir;
-        gpDir = NULL;
     }
 }
 
@@ -449,11 +471,15 @@ void deinitLog()
 }
 
 // Log an event plus parameter.
+// Note: ideally we'd mutex in here but I don't
+// want any overheads or any cause for delay
+// so please just cope with any very occasional
+// logging corruption which may occur
 void LOG(LogEvent event, int parameter)
 {
     if (gpLogNextEmpty) {
         gpLogNextEmpty->timestamp = gLogTime.read_us();
-        gpLogNextEmpty->event = event;
+        gpLogNextEmpty->event = (int) event;
         gpLogNextEmpty->parameter = parameter;
         if (gpLogNextEmpty < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
             gpLogNextEmpty++;
@@ -480,13 +506,7 @@ void flushLog()
 {
     if (gpFile != NULL) {
         fclose(gpFile);
-        LOG(EVENT_FILE_CLOSE, 0);
-        gpFile = fopen(gCurrentLogFileNameBuffer, "wb+");
-        if (gpFile) {
-            LOG(EVENT_FILE_OPEN, 0);
-        } else {
-            LOG(EVENT_FILE_OPEN_FAILURE, errno);
-        }
+        gpFile = fopen(gCurrentLogFileName, "ab+");
     }
 }
 
@@ -494,23 +514,23 @@ void flushLog()
 // to file, if a filename was provided to initLog().
 void writeLog()
 {
-    if (logMutex.trylock()) {
+    if (gLogMutex.trylock()) {
         if (gpFile != NULL) {
+            gNumWrites++;
             while (gpLogNextEmpty != gpLogFirstFull) {
                 fwrite(gpLogFirstFull, sizeof(LogEntry), 1, gpFile);
-                numWrites++;
-                if (numWrites > LOGGING_NUM_WRITES_BEFORE_FLUSH) {
-                    numWrites = 0;
-                    flushLog();
-                }
                 if (gpLogFirstFull < gpLog + MAX_NUM_LOG_ENTRIES - 1) {
                     gpLogFirstFull++;
                 } else {
                     gpLogFirstFull = gpLog;
                 }
             }
+            if (gNumWrites > LOGGING_NUM_WRITES_BEFORE_FLUSH) {
+                gNumWrites = 0;
+                flushLog();
+            }
         }
-        logMutex.unlock();
+        gLogMutex.unlock();
     }
 }
 
@@ -523,16 +543,16 @@ void printLog()
     FILE *pFile = gpFile;
     unsigned int x = 0;
 
-    logMutex.lock();
+    gLogMutex.lock();
     printf ("------------- Log starts -------------\n");
-    if (gpFile != NULL) {
+    if (pFile != NULL) {
         // If we were logging to file, read it back
         // First need to flush the file to disk
         loggingToFile = true;
         fclose(gpFile);
         gpFile = NULL;
         LOG(EVENT_FILE_CLOSE, 0);
-        pFile = fopen(gCurrentLogFileNameBuffer, "rb");
+        pFile = fopen(gCurrentLogFileName, "rb");
         if (pFile != NULL) {
             LOG(EVENT_FILE_OPEN, 0);
             while (fread(&fileItem, sizeof(fileItem), 1, pFile) == 1) {
@@ -564,7 +584,7 @@ void printLog()
 
     // Allow writeLog() to resume with the same file name
     if (loggingToFile) {
-        gpFile = fopen(gCurrentLogFileNameBuffer, "wb+");
+        gpFile = fopen(gCurrentLogFileName, "wb+");
         if (gpFile) {
             LOG(EVENT_FILE_OPEN, 0);
         } else {
@@ -574,7 +594,7 @@ void printLog()
     }
 
     printf ("-------------- Log ends --------------\n");
-    logMutex.unlock();
+    gLogMutex.unlock();
 }
 
 // End of file

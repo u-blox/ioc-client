@@ -47,7 +47,9 @@
  */
 typedef struct {
     unsigned int timestamp;
-    LogEvent event;
+    int event; // This will be LogEvent but it is stored as an int
+               // so that we are guaranteed to get a 32-bit value,
+               // making it easier to decode logs on another platform
     int parameter;
 } LogEntry;
 
@@ -74,22 +76,15 @@ void LOG(LogEvent event, int parameter);
 /** Initialise logging.
  *
  * @param pBuffer    must point to LOG_STORE_SIZE bytes of storage.
- * @param pPartition the partition in which to create the log files.
- *                   NOTE: must be a const as this function does
- *                   not take a copy of it.
- * @return           true if successful, otherwise false.
  */
-bool initLog(void *pBuffer, const char *pPartition);
+void initLog(void *pBuffer);
 
-/** Start logging to file.  May be used if no file system was available
- * at the time of the call to initLog.
+/** Start logging to file.
  *
- * @param pPartition the partition in which to open the log files.
- *                   NOTE: must be a const as this function does
- *                   not take a copy of it.
- * @return           true if successful, otherwise false.
+ * @param pPath the path at which to create the log files.
+ * @return      true if successful, otherwise false.
  */
-bool initLogFile(const char *pPartition);
+bool initLogFile(const char *pPath);
 
 /** Begin upload of log files to a logging server.
  *
@@ -99,14 +94,12 @@ bool initLogFile(const char *pPartition);
  *                          to use for upload.
  * @param pLoggingServerUrl the logging server to connect to
  *                          (including port number).
- * @param pPath             the path to the log file directory.
  * @return                  true if log uploading begins successfully,
  *                          otherwise false.
  */
 bool beginLogFileUpload(FATFileSystem *pFileSystem,
                         NetworkInterface *pNetworkInterface,
-                        const char *pLoggingServerUrl,
-                        const char * pPath);
+                        const char *pLoggingServerUrl);
 
 /** Stop uploading log files to the logging server and free resources.
  */

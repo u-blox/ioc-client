@@ -175,6 +175,12 @@
 // The partition on the SD card used by us.
 #define IOC_PARTITION "ioc"
 
+// The log file path on the partition.
+// Note: I couldn't manage to open files using
+// relative paths, hence this is the absolute
+// path to the root of our partition.
+#define LOG_FILE_PATH "/" IOC_PARTITION
+
 // The log write interval.
 #define LOG_WRITE_INTERVAL_MS 1000
 
@@ -1890,7 +1896,7 @@ static bool initFileSystem()
     if (gLoggingLocal.loggingToFileEnabled) {
         flash();
         printf("Starting logging to file...\n");
-        if (initLogFile(IOC_PARTITION)) {
+        if (initLogFile(LOG_FILE_PATH)) {
             gEventQueue.call_every(LOG_WRITE_INTERVAL_MS, writeLog);
         } else {
             printf("WARNING: unable to initialise logging to file.\n");
@@ -2478,7 +2484,7 @@ static void initialisationMode()
     // uploading any log files that might be lying around
     // from previous runs to a logging server
     if (gLoggingLocal.loggingUploadEnabled) {
-        beginLogFileUpload(&gFs, gpCellular, gLoggingLocal.loggingServerUrl.c_str(), "/");
+        beginLogFileUpload(&gFs, gpCellular, gLoggingLocal.loggingServerUrl.c_str());
     }
 
     // Remove the Initialisation mode wake-up handler
@@ -2571,9 +2577,7 @@ int main()
 
     flash();
     printf("Starting logging...\n");
-    if (!initLog(gLogBuffer, NULL)) {
-        printf("WARNING: unable to initialise logging.\n");
-    }
+    initLog(gLogBuffer);
 
     LOG(EVENT_SYSTEM_START, gResetReason);
     LOG(EVENT_BUILD_TIME_UNIX_FORMAT, __COMPILE_TIME_UNIX__);
