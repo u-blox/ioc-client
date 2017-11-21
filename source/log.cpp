@@ -21,8 +21,9 @@
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
 
-// How long to wait between flushes to file.
-#define LOGGING_NUM_WRITES_BEFORE_FLUSH 5
+// Increase this from 1 to skip flushing on file writes if the
+// processor load of writing the log file is too high.
+#define LOGGING_NUM_WRITES_BEFORE_FLUSH 1
 
 // The maximum length of a path (including trailing slash).
 #define LOGGING_MAX_LEN_PATH 56
@@ -36,7 +37,11 @@
 #define LOGGING_MAX_LEN_SERVER_URL 128
 
 // The TCP buffer size for log file uploads.
-#define LOGGING_TCP_BUFFER_SIZE 265
+// Note: chose a small value here since the logs are small
+// and it avoids a large malloc().
+// Note: must be a multiple of a LogEntry size, otherwise
+// the overhang can be lost; not sure why though...
+#define LOGGING_TCP_BUFFER_SIZE (20 * sizeof (LogEntry))
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -133,9 +138,9 @@ FILE *newLogFile()
             printf("Log file will be \"%s\".\n", gCurrentLogFileName);
             pFile = fopen (gCurrentLogFileName, "wb+");
             if (pFile != NULL) {
-                LOG(EVENT_FILE_OPEN, 0);
+                LOG(EVENT_LOG_FILE_OPEN, 0);
             } else {
-                LOG(EVENT_FILE_OPEN_FAILURE, errno);
+                LOG(EVENT_LOG_FILE_OPEN_FAILURE, errno);
                 perror ("Error initialising log file");
             }
         } else {
@@ -234,7 +239,7 @@ void logFileUploadCallback()
                         sprintf(fileNameBuffer, "%s/%s", gLogPath, dirEnt.d_name);
                         pFile = fopen(fileNameBuffer, "r");
                         if (pFile != NULL) {
-                            LOG(EVENT_FILE_OPEN, 0);
+                            LOG(EVENT_LOG_FILE_OPEN, 0);
                             sendTotalThisFile = 0;
                             do {
                                 // Read the file and send it
@@ -245,24 +250,27 @@ void logFileUploadCallback()
                                     if (z > 0) {
                                         sendCount += z;
                                         sendTotalThisFile += z;
+                                        LOG(EVENT_LOG_FILE_BYTE_COUNT, sendTotalThisFile);
                                     }
                                 }
-                                LOG(EVENT_LOG_FILE_BYTE_COUNT, sendTotalThisFile);
                             } while (size > 0);
                             LOG(EVENT_LOG_FILE_UPLOAD_COMPLETED, y);
 
                             // The file has now been sent, so close the socket
-                            LOG(EVENT_FILE_CLOSE, 0);
                             pTcpSock->close();
 
-                            // Delete the file, so that we don't try to send it again
-                            //if (remove(fileNameBuffer) == 0) {
-                            //    LOG(EVENT_FILE_DELETED, 0);
-                            //} else {
-                            //    LOG(EVENT_FILE_DELETE_FAILURE, 0);
-                            //}
+                            // If the upload succeeded, delete the file
+                            if (feof(pFile)) {
+                                if (remove(fileNameBuffer) == 0) {
+                                    LOG(EVENT_FILE_DELETED, 0);
+                                } else {
+                                    LOG(EVENT_FILE_DELETE_FAILURE, 0);
+                                }
+                            }
+                            LOG(EVENT_LOG_FILE_CLOSE, 0);
+                            fclose(pFile);
                         } else {
-                            LOG(EVENT_FILE_OPEN_FAILURE, 0);
+                            LOG(EVENT_LOG_FILE_OPEN_FAILURE, 0);
                         }
                     } else {
                         LOG(EVENT_TCP_CONNECT_FAILURE, nsapiError);
@@ -451,25 +459,6 @@ void stopLogFileUpload()
     }
 }
 
-// Close down logging.
-void deinitLog()
-{
-    stopLogFileUpload(); // Just in case
-
-    LOG(EVENT_LOG_STOP, LOG_VERSION);
-    if (gpFile != NULL) {
-        LOG(EVENT_FILE_CLOSE, 0);
-        fclose(gpFile);
-        gpFile = NULL;
-    }
-
-    // Don't reset the variables
-    // here so that printLog() still
-    // works afterwards if we're just
-    // logging to RAM rather than
-    // to file.
-}
-
 // Log an event plus parameter.
 // Note: ideally we'd mutex in here but I don't
 // want any overheads or any cause for delay
@@ -534,6 +523,27 @@ void writeLog()
     }
 }
 
+// Close down logging.
+void deinitLog()
+{
+    stopLogFileUpload(); // Just in case
+
+    LOG(EVENT_LOG_STOP, LOG_VERSION);
+    if (gpFile != NULL) {
+        writeLog();
+        flushLog(); // Just in case
+        LOG(EVENT_LOG_FILE_CLOSE, 0);
+        fclose(gpFile);
+        gpFile = NULL;
+    }
+
+    // Don't reset the variables
+    // here so that printLog() still
+    // works afterwards if we're just
+    // logging to RAM rather than
+    // to file.
+}
+
 // Print out the log.
 void printLog()
 {
@@ -551,10 +561,10 @@ void printLog()
         loggingToFile = true;
         fclose(gpFile);
         gpFile = NULL;
-        LOG(EVENT_FILE_CLOSE, 0);
+        LOG(EVENT_LOG_FILE_CLOSE, 0);
         pFile = fopen(gCurrentLogFileName, "rb");
         if (pFile != NULL) {
-            LOG(EVENT_FILE_OPEN, 0);
+            LOG(EVENT_LOG_FILE_OPEN, 0);
             while (fread(&fileItem, sizeof(fileItem), 1, pFile) == 1) {
                 printLogItem(&fileItem, x);
                 x++;
@@ -564,7 +574,7 @@ void printLog()
                 perror ("Error reading portion of log stored in file system");
             }
             fclose(pFile);
-            LOG(EVENT_FILE_CLOSE, 0);
+            LOG(EVENT_LOG_FILE_CLOSE, 0);
         } else {
             perror ("Error opening portion of log stored in file system");
         }
@@ -584,11 +594,11 @@ void printLog()
 
     // Allow writeLog() to resume with the same file name
     if (loggingToFile) {
-        gpFile = fopen(gCurrentLogFileName, "wb+");
+        gpFile = fopen(gCurrentLogFileName, "ab+");
         if (gpFile) {
-            LOG(EVENT_FILE_OPEN, 0);
+            LOG(EVENT_LOG_FILE_OPEN, 0);
         } else {
-            LOG(EVENT_FILE_OPEN_FAILURE, errno);
+            LOG(EVENT_LOG_FILE_OPEN_FAILURE, errno);
             perror ("Error initialising log file");
         }
     }

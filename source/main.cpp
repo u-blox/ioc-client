@@ -365,6 +365,7 @@ static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data);
 static void objectUpdate();
 static void cloudClientRegisteredCallback();
 static void cloudClientDeregisteredCallback();
+static void cloudClientErrorCallback(int errorCode);
 
 // Misc.
 static void buttonCallback();
@@ -1738,6 +1739,13 @@ static void cloudClientDeregisteredCallback()
     printf("Mbed Cloud Client deregistered.\n");
 }
 
+// Callback when an error occurs in mbed Cloud Client.
+static void cloudClientErrorCallback(int errorCode)
+{
+    flash();
+    LOG(EVENT_CLOUD_CLIENT_ERROR, errorCode);
+}
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: MISC
  * -------------------------------------------------------------- */
@@ -2064,7 +2072,8 @@ static bool init()
         printf("Initialising Mbed Cloud Client DM...\n");
         gpCloudClientDm = new CloudClientDm(MBED_CONF_APP_OBJECT_DEBUG_ON,
                                             &cloudClientRegisteredCallback,
-                                            &cloudClientDeregisteredCallback);
+                                            &cloudClientDeregisteredCallback,
+                                            &cloudClientErrorCallback);
 
         flash();
         printf("Configuring the LWM2M Device object...\n");
@@ -2388,6 +2397,7 @@ static void setSleepLevelRegisteredSleep(time_t sleepDurationSeconds)
         HAL_IWDG_Refresh(&gWdt);
         LOG(EVENT_ENTER_STOP, sleepTimeLeft);
         gLowPower.enterStop(sleepTimeLeft);
+        deinitLog();  // So that we have a complete record up to this point
     }
 
     printf("Awake from REGISTERED_SLEEP after %d second(s).\n", (int) (time(NULL) - gTimeEnterSleep));
@@ -2410,6 +2420,7 @@ static void setSleepLevelDeregisteredSleep(time_t sleepDurationSeconds)
     memcpy(gHistoryMarker, HISTORY_MARKER_STANDBY, sizeof (gHistoryMarker));
     HAL_IWDG_Refresh(&gWdt);
     LOG(EVENT_ENTER_STANDBY, sleepDurationSeconds * 1000);
+    deinitLog();  // So that we have a complete record
     gLowPower.enterStandby(sleepDurationSeconds * 1000);
     // The wake-up process is handled on entry to main()
 }
@@ -2423,6 +2434,7 @@ static void setSleepLevelOff()
     memcpy(gHistoryMarker, HISTORY_MARKER_OFF, sizeof (gHistoryMarker));
     HAL_IWDG_Refresh(&gWdt);
     LOG(EVENT_ENTER_STANDBY, MAX_SLEEP_SECONDS * 1000);
+    deinitLog();  // So that we have a complete record
     gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
 }
 
@@ -2442,6 +2454,7 @@ static void initialisationModeWakeUpTickHandler()
             // timer, which will reset us to start trying
             // again
             LOG(EVENT_ENTER_STANDBY, 100);
+            deinitLog();  // So that we have a complete record
             gLowPower.enterStandby(100);
         }
     }
