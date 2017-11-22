@@ -143,7 +143,10 @@
 #define WATCHDOG_WAKEUP_MS 32000
 
 // Maximum sleep period.
-#define MAX_SLEEP_SECONDS ((WATCHDOG_WAKEUP_MS / 1000) - 1)
+// Note: 5 seconds offset from the watchdog seems a lot
+// but, there are some delays at startup which need to be
+// accounted for.
+#define MAX_SLEEP_SECONDS ((WATCHDOG_WAKEUP_MS / 1000) - 5)
 
 // The maximum size of a history marker.
 // The history marker is a string stored in battery-backed SRAM
@@ -2472,10 +2475,10 @@ static void initialisationMode()
 
     // Initialise everything.  There are three possible outcomes:
     //
-    // - init() succeeds, in which case this function returns,
-    // - init() fails, in which case we go to deregistered sleep for
+    // - initFileSystem() && init() succeeds, in which case this function returns,
+    // - initFileSystem() && init() fails, in which case we go to deregistered sleep for
     //   the remainder of the wake up tick period,
-    // - init() takes longer than the wake up tick period, in which case
+    // - initFileSystem() && init() takes longer than the wake up tick period, in which case
     //   the initWakeUpTickHandler will kick in and restart things
     //   in the appropriate way.
     while (!success) {
@@ -2604,6 +2607,7 @@ int main()
         gpBatteryCharger && !gpBatteryCharger->isExternalPowerPresent()) {
         HAL_IWDG_Refresh(&gWdt);
         LOG(EVENT_ENTER_STANDBY, MAX_SLEEP_SECONDS * 1000);
+        deinitLog();  // So that we have a complete record
         gLowPower.enterStandby(MAX_SLEEP_SECONDS * 1000);
     }
 
@@ -2620,6 +2624,7 @@ int main()
                 sleepTimeLeft = MAX_SLEEP_SECONDS;
             }
             LOG(EVENT_ENTER_STANDBY, sleepTimeLeft);
+            deinitLog();  // So that we have a complete record
             gLowPower.enterStandby(sleepTimeLeft);
         }
         printf("Awake from DEREGISTERED_SLEEP after %d second(s).\n",

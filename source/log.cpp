@@ -537,6 +537,8 @@ void deinitLog()
         gpFile = NULL;
     }
 
+    gLogTime.stop();
+
     // Don't reset the variables
     // here so that printLog() still
     // works afterwards if we're just
