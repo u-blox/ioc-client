@@ -143,10 +143,7 @@
 #define WATCHDOG_WAKEUP_MS 32000
 
 // Maximum sleep period.
-// Note: 5 seconds offset from the watchdog seems a lot
-// but, there are some delays at startup which need to be
-// accounted for.
-#define MAX_SLEEP_SECONDS ((WATCHDOG_WAKEUP_MS / 1000) - 5)
+#define MAX_SLEEP_SECONDS ((WATCHDOG_WAKEUP_MS / 1000) - 1)
 
 // The maximum size of a history marker.
 // The history marker is a string stored in battery-backed SRAM
@@ -2579,6 +2576,10 @@ int main()
 {
     time_t sleepTimeLeft;
 
+    // If we've been in Standby need to feed
+    // the watchdog nice and early
+    HAL_IWDG_Refresh(&gWdt);
+
     flash();
 
     gResetReason = getResetReason();
@@ -2592,7 +2593,6 @@ int main()
     }
 
     flash();
-    printf("Starting logging...\n");
     initLog(gLogBuffer);
 
     LOG(EVENT_SYSTEM_START, gResetReason);
@@ -2625,7 +2625,7 @@ int main()
             }
             LOG(EVENT_ENTER_STANDBY, sleepTimeLeft);
             deinitLog();  // So that we have a complete record
-            gLowPower.enterStandby(sleepTimeLeft);
+            gLowPower.enterStandby(sleepTimeLeft * 1000);
         }
         printf("Awake from DEREGISTERED_SLEEP after %d second(s).\n",
                (int) (time(NULL) - gTimeEnterSleep));
