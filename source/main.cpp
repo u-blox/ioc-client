@@ -350,16 +350,16 @@ static unsigned int littleEndianUInt(char *pByte);
 static bool gnssUpdate(IocM2mLocation::Location *location);
 
 // LWM2M control.
-static void addObject(IocM2mObjectId id, void * object);
+static void addObject(IocM2mObjectId id, void *pObject);
 static void deleteObject(IocM2mObjectId id);
 static void setPowerControl(bool value);
-static bool getLocationData(IocM2mLocation::Location *data);
-static bool getTemperatureData(IocM2mTemperature::Temperature *data);
+static bool getLocationData(IocM2mLocation::Location *pData);
+static bool getTemperatureData(IocM2mTemperature::Temperature *pData);
 static void executeResetTemperatureMinMax();
-static void setConfigData(const IocM2mConfig::Config *data);
+static void setConfigData(const IocM2mConfig::Config *pData);
 static IocM2mConfig::Config *convertConfigLocalToM2m (IocM2mConfig::Config *pM2m, const ConfigLocal *pLocal);
 static void setAudioData(const IocM2mAudio::Audio *m2mAudio);
-static bool getStreamingEnabled(bool *streamingEnabled);
+static bool getStreamingEnabled(bool *pStreamingEnabled);
 static IocM2mAudio::Audio *convertAudioLocalToM2m (IocM2mAudio::Audio *pM2m, const AudioLocal *pLocal);
 static bool getDiagnosticsData(IocM2mDiagnostics::Diagnostics *data);
 static void objectUpdate();
@@ -1313,7 +1313,7 @@ static bool gnssUpdate(IocM2mLocation::Location *location)
  * -------------------------------------------------------------- */
 
 // Add an LWM2M object to the relevant lists
-static void addObject(IocM2mObjectId id, void * object)
+static void addObject(IocM2mObjectId id, void *pObject)
 {
     printf ("Adding object with ID %d.\n", id);
 
@@ -1323,37 +1323,37 @@ static void addObject(IocM2mObjectId id, void * object)
 
     switch (id) {
         case IOC_M2M_POWER_CONTROL:
-            gObjectList[id].object.pPowerControl = (IocM2mPowerControl *) object;
+            gObjectList[id].object.pPowerControl = (IocM2mPowerControl *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pPowerControl->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pPowerControl,
                                                                              &IocM2mPowerControl::updateObservableResources);
             break;
         case IOC_M2M_LOCATION:
-            gObjectList[id].object.pLocation = (IocM2mLocation *) object;
+            gObjectList[id].object.pLocation = (IocM2mLocation *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pLocation->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pLocation,
                                                                              &IocM2mLocation::updateObservableResources);
             break;
         case IOC_M2M_TEMPERATURE:
-            gObjectList[id].object.pTemperature = (IocM2mTemperature *) object;
+            gObjectList[id].object.pTemperature = (IocM2mTemperature *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pTemperature->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pTemperature,
                                                                              &IocM2mTemperature::updateObservableResources);
             break;
         case IOC_M2M_CONFIG:
-            gObjectList[id].object.pConfig = (IocM2mConfig *) object;
+            gObjectList[id].object.pConfig = (IocM2mConfig *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pConfig->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pConfig,
                                                                              &IocM2mConfig::updateObservableResources);
             break;
         case IOC_M2M_AUDIO:
-            gObjectList[id].object.pAudio = (IocM2mAudio *) object;
+            gObjectList[id].object.pAudio = (IocM2mAudio *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pAudio->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pAudio,
                                                                              &IocM2mAudio::updateObservableResources);
             break;
         case IOC_M2M_DIAGNOSTICS:
-            gObjectList[id].object.pDiagnostics = (IocM2mDiagnostics *) object;
+            gObjectList[id].object.pDiagnostics = (IocM2mDiagnostics *) pObject;
             gpCloudClientDm->addObject(gObjectList[id].object.pDiagnostics->getObject());
             gObjectList[id].updateObservableResources = Callback<void(void)>(gObjectList[id].object.pDiagnostics,
                                                                              &IocM2mDiagnostics::updateObservableResources);
@@ -1423,14 +1423,14 @@ static void setPowerControl(bool value)
 
 // Callback that retrieves location data for the IocM2mLocation
 // object.
-static bool getLocationData(IocM2mLocation::Location *data)
+static bool getLocationData(IocM2mLocation::Location *pData)
 {
-    return gnssUpdate(data);
+    return gnssUpdate(pData);
 }
 
 // Callback that retrieves temperature data for the IocM2mTemperature
 // object.
-static bool getTemperatureData(IocM2mTemperature::Temperature *data)
+static bool getTemperatureData(IocM2mTemperature::Temperature *pData)
 {
     bool success = false;
 
@@ -1443,9 +1443,9 @@ static bool getTemperatureData(IocM2mTemperature::Temperature *data)
             gTemperatureLocal.maxC = gTemperatureLocal.nowC;
         }
 
-        data->temperature = (float) gTemperatureLocal.nowC;
-        data->minTemperature = (float) gTemperatureLocal.minC;
-        data->maxTemperature = (float) gTemperatureLocal.maxC;
+        pData->temperature = (float) gTemperatureLocal.nowC;
+        pData->minTemperature = (float) gTemperatureLocal.minC;
+        pData->maxTemperature = (float) gTemperatureLocal.maxC;
         success = true;
     }
 
@@ -1468,21 +1468,21 @@ static void executeResetTemperatureMinMax()
 
 // Callback that sets the configuration data via the IocM2mConfig
 // object.
-static void setConfigData(const IocM2mConfig::Config *data)
+static void setConfigData(const IocM2mConfig::Config *pData)
 {
     // Something has happened, tell Ready mode about it
     readyModeInstructionReceived();
 
     printf("Received new config settings:\n");
-    printf("  initWakeUpTickCounterPeriod %f.\n", data->initWakeUpTickCounterPeriod);
-    printf("  initWakeUpTickCounterModulo %lld.\n", data->initWakeUpTickCounterModulo);
-    printf("  readyWakeUpTickCounterPeriod1 %f.\n", data->readyWakeUpTickCounterPeriod1);
-    printf("  readyWakeUpTickCounterPeriod2 %f.\n", data->readyWakeUpTickCounterPeriod2);
-    printf("  readyWakeUpTickCounterModulo %lld.\n", data->readyWakeUpTickCounterModulo);
-    printf("  GNSS enable %d.\n", data->gnssEnable);
+    printf("  initWakeUpTickCounterPeriod %f.\n", pData->initWakeUpTickCounterPeriod);
+    printf("  initWakeUpTickCounterModulo %lld.\n", pData->initWakeUpTickCounterModulo);
+    printf("  readyWakeUpTickCounterPeriod1 %f.\n", pData->readyWakeUpTickCounterPeriod1);
+    printf("  readyWakeUpTickCounterPeriod2 %f.\n", pData->readyWakeUpTickCounterPeriod2);
+    printf("  readyWakeUpTickCounterModulo %lld.\n", pData->readyWakeUpTickCounterModulo);
+    printf("  GNSS enable %d.\n", pData->gnssEnable);
 
     /// Handle GNSS configuration changes
-    if (!gpGnss && data->gnssEnable) {
+    if (!gpGnss && pData->gnssEnable) {
         gPendingGnssStop = false;
         LOG(EVENT_GNSS_START, 0);
         gpGnss = new GnssSerial();
@@ -1491,19 +1491,19 @@ static void setConfigData(const IocM2mConfig::Config *data)
             delete gpGnss;
             gpGnss = NULL;
         }
-    } else if (gpGnss && !data->gnssEnable) {
+    } else if (gpGnss && !pData->gnssEnable) {
         LOG(EVENT_GNSS_STOP_PENDING, 0);
         gPendingGnssStop = true;
     }
 
     // TODO act on the rest of it
 
-    gConfigLocal.initWakeUpTickCounterPeriod = (time_t) data->initWakeUpTickCounterPeriod;
-    gConfigLocal.initWakeUpTickCounterModulo = data->initWakeUpTickCounterModulo;
-    gConfigLocal.readyWakeUpTickCounterPeriod1 = (time_t) data->readyWakeUpTickCounterPeriod1;
-    gConfigLocal.readyWakeUpTickCounterPeriod2 = (time_t) data->readyWakeUpTickCounterPeriod2;
-    gConfigLocal.readyWakeUpTickCounterModulo = data->readyWakeUpTickCounterModulo;
-    gConfigLocal.gnssEnable = data->gnssEnable;
+    gConfigLocal.initWakeUpTickCounterPeriod = (time_t) pData->initWakeUpTickCounterPeriod;
+    gConfigLocal.initWakeUpTickCounterModulo = pData->initWakeUpTickCounterModulo;
+    gConfigLocal.readyWakeUpTickCounterPeriod1 = (time_t) pData->readyWakeUpTickCounterPeriod1;
+    gConfigLocal.readyWakeUpTickCounterPeriod2 = (time_t) pData->readyWakeUpTickCounterPeriod2;
+    gConfigLocal.readyWakeUpTickCounterModulo = pData->readyWakeUpTickCounterModulo;
+    gConfigLocal.gnssEnable = pData->gnssEnable;
     LOG(EVENT_SET_INIT_WAKE_UP_TICK_COUNTER_PERIOD, gConfigLocal.initWakeUpTickCounterPeriod);
     LOG(EVENT_SET_INIT_WAKE_UP_TICK_COUNTER_MODULO, gConfigLocal.initWakeUpTickCounterModulo);
     LOG(EVENT_SET_READY_WAKE_UP_TICK_COUNTER_PERIOD1, gConfigLocal.readyWakeUpTickCounterPeriod1);
@@ -1568,9 +1568,9 @@ static void setAudioData(const IocM2mAudio::Audio *m2mAudio)
 }
 
 // Callback that retrieves the state of streamingEnabled
-static bool getStreamingEnabled(bool *streamingEnabled)
+static bool getStreamingEnabled(bool *pStreamingEnabled)
 {
-    *streamingEnabled = gAudioLocalActive.streamingEnabled;
+    *pStreamingEnabled = gAudioLocalActive.streamingEnabled;
 
     return true;
 }
