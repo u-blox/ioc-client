@@ -122,12 +122,11 @@ void resetConfig()
 // Initialise the configuration object.
 IocM2mConfig *pInitConfig()
 {
-    IocM2mConfig *gpM2mObject;
     IocM2mConfig::Config *pTempStore = new IocM2mConfig::Config;
     
     gpM2mObject = new IocM2mConfig(setConfigData,
-                                  convertConfigLocalToM2m(pTempStore, &gConfigLocal),
-                                  MBED_CONF_APP_OBJECT_DEBUG_ON);
+                                   convertConfigLocalToM2m(pTempStore, &gConfigLocal),
+                                   MBED_CONF_APP_OBJECT_DEBUG_ON);
     delete pTempStore;
     
     return gpM2mObject;

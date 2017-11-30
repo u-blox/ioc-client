@@ -54,7 +54,7 @@ static void executeResetTemperatureMinMax();
  * VARIABLES
  * -------------------------------------------------------------- */
 
-static I2C *gpI2C = NULL;
+static I2C *gpI2c = NULL;
 static TemperatureLocal gTemperatureLocal = {0};
 static IocM2mTemperature *gpM2mObject = NULL;
 static BatteryGaugeBq27441 *gpBatteryGauge = NULL;
@@ -107,14 +107,15 @@ static void executeResetTemperatureMinMax()
  * -------------------------------------------------------------- */
 
 // Initialise stuff on the I2C bus.
-I2C *pInitI2C()
+I2C *pInitI2c()
 {
     flash();
+    feedWatchdog();
     LOG(EVENT_I2C_START, 0);
-    gpI2C = new I2C(I2C_SDA_B, I2C_SCL_B);
+    gpI2c = new I2C(I2C_SDA_B, I2C_SCL_B);
     LOG(EVENT_BATTERY_CHARGER_BQ24295_START, 0);
     gpBatteryCharger = new BatteryChargerBq24295();
-    if (gpBatteryCharger->init(gpI2C)) {
+    if (gpBatteryCharger->init(gpI2c)) {
         if (!gpBatteryCharger->enableCharging() ||
             !gpBatteryCharger->setInputVoltageLimit(MIN_INPUT_VOLTAGE_LIMIT_MV) ||
             !gpBatteryCharger->setWatchdog(0)) {
@@ -129,9 +130,10 @@ I2C *pInitI2C()
         delete gpBatteryCharger;
         gpBatteryCharger = NULL;
     }
+    feedWatchdog();
     LOG(EVENT_BATTERY_GAUGE_BQ27441_START, 0);
     gpBatteryGauge = new BatteryGaugeBq27441();
-    if (gpBatteryGauge->init(gpI2C)) {
+    if (gpBatteryGauge->init(gpI2c)) {
         if (!gpBatteryGauge->disableBatteryDetect() ||
             !gpBatteryGauge->enableGauge()) {
             bad();
@@ -154,22 +156,22 @@ I2C *pInitI2C()
     // Only need I2C for battery stuff, so if neither work just delete it
     if ((gpBatteryGauge == NULL) && (gpBatteryCharger == NULL)) {
         LOG(EVENT_I2C_STOP, 0);
-        delete gpI2C;
-        gpI2C = NULL;
+        delete gpI2c;
+        gpI2c = NULL;
     }
 
-    return gpI2C;
+    return gpI2c;
 }
 
 // Init temperature stuff.
 IocM2mTemperature *pInitTemperature()
 {
     gpM2mObject = new IocM2mTemperature(getTemperatureData,
-                                       executeResetTemperatureMinMax,
-                                       TEMPERATURE_MIN_MEASURABLE_RANGE,
-                                       TEMPERATURE_MAX_MEASURABLE_RANGE,
-                                       TEMPERATURE_UNITS,
-                                       MBED_CONF_APP_OBJECT_DEBUG_ON);
+                                        executeResetTemperatureMinMax,
+                                        TEMPERATURE_MIN_MEASURABLE_RANGE,
+                                        TEMPERATURE_MAX_MEASURABLE_RANGE,
+                                        TEMPERATURE_UNITS,
+                                        MBED_CONF_APP_OBJECT_DEBUG_ON);
 
     return gpM2mObject;
 }
@@ -182,7 +184,7 @@ void deinitTemperature()
 }
 
 // Shut down the I2C stuff.
-void deinitI2C()
+void deinitI2c()
 {
     if (gpBatteryCharger != NULL) {
         flash();
@@ -201,12 +203,12 @@ void deinitI2C()
         gpBatteryGauge = NULL;
     }
 
-    if (gpI2C != NULL) {
+    if (gpI2c != NULL) {
         flash();
         LOG(EVENT_I2C_STOP, 0);
         printf("Stopping I2C...\n");
-        delete gpI2C;
-        gpI2C = NULL;
+        delete gpI2c;
+        gpI2c = NULL;
     }
 }
 

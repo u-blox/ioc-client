@@ -1,6 +1,7 @@
 // Log points defined by the application
     EVENT_SYSTEM_START,
     EVENT_SYSTEM_STOP,
+    EVENT_SYSTEM_UP_FOR,
     EVENT_ENTER_STANDBY,
     EVENT_ENTER_STOP,
     EVENT_SLEEP_LEVEL_OFF,

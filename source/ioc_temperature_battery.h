@@ -141,7 +141,7 @@ protected:
  * charger, from which we also obtain a temperature reading).
  * @return  a pointer to the I2C instance or NULL on failure.
  */
-I2C *pInitI2C();
+I2C *pInitI2c();
 
 /** Initialise the temperature object.
  * @return  a pointer to the Temperature object.
@@ -154,7 +154,7 @@ void deinitTemperature();
 
 /** Shut down the stuff on the I2C bus.
  */
-void deinitI2C();
+void deinitI2c();
 
 /** Determine if a battery is detected.
  * @return  true if a battery is detected, otherwise false.

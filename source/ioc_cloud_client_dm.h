@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "mbed.h"
+#include "UbloxPPPCellularInterface.h"
 #include "MbedCloudClient.h"
 #include "cloud_client_dm.h"
 #include "m2m_object_helper.h"
@@ -54,10 +55,16 @@
 /** Initialise Mbed Cloud Client, its Device Management object
  * and all the other associated objects.
  *
- * @param   a pointer to a connected NetworkInterface.
  * @return  a pointer to the CloudClientDM object, or NULL on failure.
  */
-CloudClientDm *pInitCloudClientDm(NetworkInterface *pNetworkInterface);
+CloudClientDm *pInitCloudClientDm();
+
+/** Connect the Mbed Cloud Client to the server.
+ *
+ * @param   a pointer to a connected network interface.
+ * @return  true if successful, otherwise false.
+ */
+bool connectCloudClientDm(NetworkInterface *pNetworkInterface);
 
 /** Shut down Mbed Cloud Client and all objects.
  */

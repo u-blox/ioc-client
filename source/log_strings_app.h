@@ -1,6 +1,7 @@
 // Strings for log points defined by the application
     "  SYSTEM_START",
     "  SYSTEM_STOP",
+    "  SYSTEM_UP_FOR",
     "  ENTER_STANDBY",
     "  ENTER_STOP",
     "  SLEEP_LEVEL_OFF",

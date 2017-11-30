@@ -50,7 +50,7 @@ static char gLogBuffer[LOG_STORE_SIZE];
 int main()
 {
     time_t sleepTimeLeft;
-    Ticker secondTicker;
+    Ticker *pSecondTicker = NULL;
 
     // If you find the IOC client is waking up in "OFF"
     // mode (and hence going back to sleep again) uncomment
@@ -79,7 +79,7 @@ int main()
     LOG(EVENT_BUILD_TIME_UNIX_FORMAT, __COMPILE_TIME_UNIX__);
 
     // Bring up the battery charger and battery gauge on the I2C bus
-    pInitI2C();
+    pInitI2c();
 
     // If we should be off, and there is no external
     // power to keep us going, go straight back to sleep
@@ -151,15 +151,18 @@ int main()
     flash();
     printf("Printing the log...\n");
     // Run a ticker to feed the watchdog while we print out the log
-    secondTicker.attach_us(callback(&feedWatchdog), 1000000);
+    pSecondTicker = new Ticker();
+    pSecondTicker->attach_us(callback(&feedWatchdog), 1000000);
     printLog();
-    secondTicker.detach();
+    pSecondTicker->detach();
+    delete pSecondTicker;
     printf("Stopping logging...\n");
     deinitLog();
     deinitFileSystem();
 
     LOG(EVENT_SYSTEM_STOP, 0);
     printf("********** STOP **********\n");
+    ledOff();
 
     setSleepLevelOff();
 }

@@ -254,7 +254,10 @@ static void printFccError()
 
 // Initialise the Mbed Cloud Client and its Device Management object.
 // Note: here be multiple return statements.
-CloudClientDm *pInitCloudClientDm(NetworkInterface *pNetworkInterface)
+// Note: the process of connecting to the server is kept separate as
+// having cellular running while doing this Cloud Client initialisation
+// puts too much stuff on the stack.
+CloudClientDm *pInitCloudClientDm()
 {
     bool cloudClientConfigGood = false;
     bool dmObjectConfigGood = false;
@@ -409,23 +412,32 @@ CloudClientDm *pInitCloudClientDm(NetworkInterface *pNetworkInterface)
         return gpCloudClientDm;
     }
 
-    flash();
-    LOG(EVENT_CLOUD_CLIENT_CONNECTING, 0);
-    printf("Connecting to LWM2M server...\n");
-    if (!gpCloudClientDm->connect(pNetworkInterface)) {
-        bad();
-        LOG(EVENT_CLOUD_CLIENT_CONNECT_FAILURE, 0);
-        printf("Unable to connect to LWM2M server.\n");
-        delete gpCloudClientDm;
-        gpCloudClientDm = NULL;
-        return gpCloudClientDm;
-    } else {
-        LOG(EVENT_CLOUD_CLIENT_CONNECTED, 0);
-        printf("Connected to LWM2M server, please wait for registration to complete...\n");
-        // !!! SUCCESS !!!
-    }
+    // !!! SUCCESS !!!
 
     return gpCloudClientDm;
+}
+
+// Connect the Mbed Cloud Client to the LWM2M server.
+bool connectCloudClientDm(NetworkInterface *pNetworkInterface)
+{
+    bool success = false;
+
+    if (gpCloudClientDm != NULL) {
+        flash();
+        LOG(EVENT_CLOUD_CLIENT_CONNECTING, 0);
+        printf("Connecting to LWM2M server...\n");
+        if (!gpCloudClientDm->connect(pNetworkInterface)) {
+            bad();
+            LOG(EVENT_CLOUD_CLIENT_CONNECT_FAILURE, 0);
+            printf("Unable to connect to LWM2M server.\n");
+        } else {
+            success = true;
+            LOG(EVENT_CLOUD_CLIENT_CONNECTED, 0);
+            printf("Connected to LWM2M server, please wait for registration to complete...\n");
+        }
+    }
+
+    return success;
 }
 
 // Shut down the Mbed Cloud Client.

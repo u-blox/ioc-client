@@ -118,6 +118,7 @@ static bool init()
     bool success = false;
     NetworkInterface *pNetworkInterface;
 
+    setStartTime(time(NULL));
     initWatchdog();
 
     flash();
@@ -125,10 +126,9 @@ static bool init()
     gpUserButton = new InterruptIn(SW0);
     gpUserButton->rise(&buttonCallback);
 
-    pNetworkInterface = pInitNetwork();
-
-    if ((pNetworkInterface != NULL) &&
-        (pInitCloudClientDm(pNetworkInterface) != NULL)) {
+    if ((pInitCloudClientDm() != NULL) &&
+        ((pNetworkInterface = pInitNetwork()) != NULL) &&
+        connectCloudClientDm(pNetworkInterface)) {
         success = true;
     }
 
@@ -184,10 +184,9 @@ static void deinit()
         gpUserButton = NULL;
     }
 
-    x = getStartTime();
-    if (x > 0) {
-        printf("Up for %ld second(s).\n", time(NULL) - x);
-    }
+    x = time(NULL) - getStartTime();
+    printf("Up for %d second(s).\n", x);
+    LOG(EVENT_SYSTEM_UP_FOR, x);
 
     printf("All stop.\n");
 }
@@ -564,7 +563,7 @@ void readyMode()
 
     // Shut everything down
     deinit();
-    deinitI2C();
+    deinitI2c();
     ledOff();
 }
 

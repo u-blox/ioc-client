@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "mbed.h"
-#include "UbloxPPPCellularInterface.h"
 
 #ifndef _IOC_NETWORK_
 #define _IOC_NETWORK_
@@ -36,7 +35,7 @@
  * -------------------------------------------------------------- */
 
 /** Initialise the network interface, including connecting it.
- * @return  a pointer to NetworkInterface, or NULL on failure.
+ * @return  a pointer to the network interface, or NULL on failure.
  */
 NetworkInterface *pInitNetwork();
 

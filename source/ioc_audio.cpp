@@ -41,16 +41,6 @@
 #define COMMS_TCP 1
 #define COMMS_UDP 0
 
-// Length of one TCP packet, must be at least
-// URTP_DATAGRAM_SIZE, best is if it is a multiple
-// of URTP_DATAGRAM_SIZE that fits within a sensible
-// TCP packet size
-#ifdef TCP_MSS
-# define TCP_BUFFER_LENGTH TCP_MSS
-#else
-# define TCP_BUFFER_LENGTH URTP_DATAGRAM_SIZE * 4
-#endif
-
 // A signal to indicate that an audio datagram is ready to send.
 #define SIG_DATAGRAM_READY 0x01
 
@@ -113,10 +103,6 @@ static uint32_t gRawAudio[(SAMPLES_PER_BLOCK * 2) * 2];
 __attribute__ ((section ("CCMRAM")))
 static char gDatagramStorage[URTP_DATAGRAM_STORE_SIZE];
 
-// Buffer that holds one TCP packet.
-static char gTcpBuffer[TCP_BUFFER_LENGTH];
-static char *gpTcpBuffer = gTcpBuffer;
-
 // Task to send data off to the audio streaming server.
 static Thread *gpSendTask = NULL;
 
@@ -127,7 +113,7 @@ static Urtp gUrtp(&datagramReadyCb, &datagramOverflowStartCb, &datagramOverflowS
 static volatile bool gAudioCommsConnected = false;
 
 // The microphone.
-static I2S gMic(PB_15, PB_10, PB_9);
+static I2S *gpI2s = NULL;
 
 // The LWM2M object
 static IocM2mAudio *gpM2mObject = NULL;
@@ -328,7 +314,7 @@ static void stopAudioStreamingConnection(AudioLocal *pAudio)
         case COMMS_TCP:
             // No need to close() the socket,
             // the destructor does that.
-            if (pAudio->sock.pTcpSock) {
+            if (pAudio->sock.pTcpSock != NULL) {
                 delete pAudio->sock.pTcpSock;
                 pAudio->sock.pTcpSock = NULL;
             }
@@ -336,7 +322,7 @@ static void stopAudioStreamingConnection(AudioLocal *pAudio)
         case COMMS_UDP:
             // No need to close() the socket,
             // the destructor does that.
-            if (pAudio->sock.pUdpSock) {
+            if (pAudio->sock.pUdpSock != NULL) {
                 delete pAudio->sock.pUdpSock;
                 pAudio->sock.pUdpSock = NULL;
             }
@@ -401,19 +387,11 @@ static void sendAudioData(const AudioLocal * pAudioLocal)
             if (gAudioCommsConnected) {
                 //LOG(EVENT_SEND_START, (int) pUrtpDatagram);
                 if (pAudioLocal->socketMode == COMMS_TCP) {
-                    // For TCP, assemble the datagrams
-                    // into a whole packet before sending
-                    // for maximum efficiency
-                    memcpy (gpTcpBuffer, pUrtpDatagram, URTP_DATAGRAM_SIZE);
-                    gpTcpBuffer += URTP_DATAGRAM_SIZE;
-                    retValue = URTP_DATAGRAM_SIZE;
-                    if (gpTcpBuffer >= gTcpBuffer + sizeof(gTcpBuffer)) {
-                        gpTcpBuffer = gTcpBuffer;
-                        retValue = tcpSend(pAudioLocal->sock.pTcpSock, pUrtpDatagram, URTP_DATAGRAM_SIZE);
-                    }
+                    retValue = tcpSend(pAudioLocal->sock.pTcpSock, pUrtpDatagram, URTP_DATAGRAM_SIZE);
                 } else {
                     retValue = pAudioLocal->sock.pUdpSock->sendto(pAudioLocal->server, pUrtpDatagram, URTP_DATAGRAM_SIZE);
                 }
+
                 if (retValue != URTP_DATAGRAM_SIZE) {
                     badSendDurationTimer.start();
                     LOG(EVENT_SEND_FAILURE, retValue);
@@ -521,25 +499,28 @@ static void i2sEventCallback (int arg)
 //
 // This is known as the Philips protocol (24-bit frame with CPOL = 0 to read
 // the data on the rising edge).
-static bool startI2s(I2S * pI2s)
+static bool startI2s()
 {
     bool success = false;
 
     flash();
     LOG(EVENT_I2S_START, 0);
     printf("Starting I2S...\n");
-    if ((pI2s->protocol(PHILIPS) == 0) &&
-        (pI2s->mode(MASTER_RX, true) == 0) &&
-        (pI2s->format(24, 32, 0) == 0) &&
-        (pI2s->audio_frequency(SAMPLING_FREQUENCY) == 0)) {
+    if (gpI2s == NULL) {
+        gpI2s = new I2S(PB_15, PB_10, PB_9);
+    }
+    if ((gpI2s->protocol(PHILIPS) == 0) &&
+        (gpI2s->mode(MASTER_RX, true) == 0) &&
+        (gpI2s->format(24, 32, 0) == 0) &&
+        (gpI2s->audio_frequency(SAMPLING_FREQUENCY) == 0)) {
         if (gpI2sTask == NULL) {
             gpI2sTask = new Thread();
         }
         if (gpI2sTask->start(gI2STaskCallback) == osOK) {
-            if (pI2s->transfer((void *) NULL, 0,
-                               (void *) gRawAudio, sizeof (gRawAudio),
-                               event_callback_t(&i2sEventCallback),
-                               I2S_EVENT_ALL) == 0) {
+            if (gpI2s->transfer((void *) NULL, 0,
+                                (void *) gRawAudio, sizeof (gRawAudio),
+                                event_callback_t(&i2sEventCallback),
+                                I2S_EVENT_ALL) == 0) {
                 success = true;
                 printf("I2S started.\n");
             } else {
@@ -562,19 +543,25 @@ static bool startI2s(I2S * pI2s)
 }
 
 // Stop the I2S interface.
-static void stopI2s(I2S * pI2s)
+static void stopI2s()
 {
-    flash();
-    LOG(EVENT_I2S_STOP, 0);
-    printf("Stopping I2S...\n");
-    pI2s->abort_all_transfers();
-    if (gpI2sTask != NULL) {
-       gpI2sTask->terminate();
-       gpI2sTask->join();
-       delete gpI2sTask;
-       gpI2sTask = NULL;
+    if (gpI2s != NULL) {
+        flash();
+        LOG(EVENT_I2S_STOP, 0);
+        printf("Stopping I2S...\n");
+        gpI2s->abort_all_transfers();
+        if (gpI2sTask != NULL) {
+            gpI2sTask->terminate();
+            gpI2sTask->join();
+            delete gpI2sTask;
+            gpI2sTask = NULL;
+        }
+
+        delete gpI2s;
+        gpI2s = NULL;
+
+        printf("I2S stopped.\n");
     }
-    printf("I2S stopped.\n");
 }
 
 /* ----------------------------------------------------------------
@@ -584,22 +571,24 @@ static void stopI2s(I2S * pI2s)
 // Stop audio streaming.
 static void stopStreaming(AudioLocal *pAudioLocal)
 {
-    stopI2s(&gMic);
+    stopI2s();
 
-    // Wait for any on-going transmissions to complete
-    wait_ms(2000);
+    if (gpSendTask != NULL) {
+        // Wait for any on-going transmissions to complete
+        wait_ms(2000);
 
-    flash();
-    LOG(EVENT_AUDIO_STREAMING_STOP, 0);
-    printf ("Stopping audio send task...\n");
-    gpSendTask->terminate();
-    gpSendTask->join();
-    delete gpSendTask;
-    gpSendTask = NULL;
-    good();  // Make sure the green LED stays on at
-             // the end as it will have been
-             // toggling throughout
-    printf ("Audio send task stopped.\n");
+        flash();
+        LOG(EVENT_AUDIO_STREAMING_STOP, 0);
+        printf ("Stopping audio send task...\n");
+        gpSendTask->terminate();
+        gpSendTask->join();
+        delete gpSendTask;
+        gpSendTask = NULL;
+        good();  // Make sure the green LED stays on at
+                 // the end as it will have been
+                 // toggling throughout
+        printf ("Audio send task stopped.\n");
+    }
 
     stopAudioStreamingConnection(pAudioLocal);
 
@@ -621,6 +610,7 @@ static bool startStreaming(AudioLocal *pAudioLocal)
     resetDiagnostics();
 
     if (!startAudioStreamingConnection(pAudioLocal)) {
+        pAudioLocal->streamingEnabled = false;
         LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 0);
         return false;
     }
@@ -628,6 +618,7 @@ static bool startStreaming(AudioLocal *pAudioLocal)
     flash();
     printf ("Setting up URTP...\n");
     if (!gUrtp.init((void *) &gDatagramStorage, pAudioLocal->fixedGain)) {
+        pAudioLocal->streamingEnabled = false;
         bad();
         LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 1);
         printf ("Unable to start URTP.\n");
@@ -641,13 +632,15 @@ static bool startStreaming(AudioLocal *pAudioLocal)
     }
     retValue = gpSendTask->start(callback(sendAudioData, pAudioLocal));
     if (retValue != osOK) {
+        pAudioLocal->streamingEnabled = false;
         bad();
         LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 2);
         printf ("Error starting task (%d).\n", retValue);
         return false;
     }
 
-    if (!startI2s(&gMic)) {
+    if (!startI2s()) {
+        pAudioLocal->streamingEnabled = false;
         LOG(EVENT_AUDIO_STREAMING_START_FAILURE, 3);
         return false;
     }
@@ -671,7 +664,7 @@ static bool startStreaming(AudioLocal *pAudioLocal)
 // object.
 static void setAudioData(const IocM2mAudio::Audio *pM2mAudio)
 {
-    bool streamingWasEnabled = gAudioLocalPending.streamingEnabled;
+    bool streamingWasEnabled = gAudioLocalActive.streamingEnabled;
 
     // Something has happened, tell Ready mode about it
     readyModeInstructionReceived();
@@ -702,10 +695,11 @@ static void setAudioData(const IocM2mAudio::Audio *pM2mAudio)
         LOG(EVENT_SET_AUDIO_CONFIG_STREAMING_DISABLED, 0);
         stopStreaming(&gAudioLocalActive);
         gAudioLocalPending.streamingEnabled = gAudioLocalActive.streamingEnabled;
-        // Call this to update the diagnostics straight away as they will have been
-        // modified during the streaming session
-        cloudClientObjectUpdate();
     }
+    // Call this to line up the Audio object, and potentially
+    // any diagnostics from the streaming having been run,
+    // with the local data
+    cloudClientObjectUpdate();
 }
 
 // Callback that retrieves the state of streamingEnabled
@@ -736,7 +730,7 @@ static IocM2mAudio::Audio *pConvertAudioLocalToM2m (IocM2mAudio::Audio *pM2m, co
 IocM2mAudio *pInitAudio()
 {
     IocM2mAudio::Audio *pTempStore = new IocM2mAudio::Audio;
-    
+
     // Set up defaults
     gAudioLocalPending.streamingEnabled = AUDIO_DEFAULT_STREAMING_ENABLED;
     gAudioLocalPending.duration = AUDIO_DEFAULT_DURATION;
@@ -747,9 +741,9 @@ IocM2mAudio *pInitAudio()
 
     // Add the object to the global collection
     gpM2mObject = new IocM2mAudio(setAudioData,
-                                 getStreamingEnabled,
-                                 pConvertAudioLocalToM2m(pTempStore, &gAudioLocalPending),
-                                 MBED_CONF_APP_OBJECT_DEBUG_ON);
+                                  getStreamingEnabled,
+                                  pConvertAudioLocalToM2m(pTempStore, &gAudioLocalPending),
+                                  MBED_CONF_APP_OBJECT_DEBUG_ON);
     delete pTempStore;
     
     return gpM2mObject;

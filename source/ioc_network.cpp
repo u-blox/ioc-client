@@ -39,7 +39,7 @@ UbloxPPPCellularInterface *gpCellular = NULL;
 // Note: here be multiple return statements.
 NetworkInterface *pInitNetwork()
 {
-    Ticker secondTicker;
+    Ticker *pSecondTicker = NULL;
 
     flash();
     LOG(EVENT_MODEM_START, 0);
@@ -56,21 +56,24 @@ NetworkInterface *pInitNetwork()
     }
 
     // Run a ticker to feed the watchdog while we wait for registration
-    secondTicker.attach_us(callback(&feedWatchdog), 1000000);
+    pSecondTicker = new Ticker();
+    pSecondTicker->attach_us(callback(&feedWatchdog), 1000000);
 
     flash();
     LOG(EVENT_NETWORK_CONNECTING, 0);
     printf("Please wait up to 180 seconds to connect to the cellular packet network...\n");
     if (gpCellular->connect() != NSAPI_ERROR_OK) {
-        secondTicker.detach();
         delete gpCellular;
         gpCellular = NULL;
+        pSecondTicker->detach();
+        delete pSecondTicker;
         bad();
         LOG(EVENT_NETWORK_CONNECTION_FAILURE, 0);
         printf("Unable to connect to the cellular packet network.\n");
         return gpCellular;
     }
-    secondTicker.detach();
+    pSecondTicker->detach();
+    delete pSecondTicker;
     LOG(EVENT_NETWORK_CONNECTED, 0);
 
     return (NetworkInterface *) gpCellular;
